@@ -1,0 +1,25 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Data (CC BY 4.0, 208 MB: download from UCI, do not commit)
+*.csv
+metropt+3+dataset/
+
+# Model outputs
+*.pkl
+*.joblib
+*.pt
+*.pth
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
