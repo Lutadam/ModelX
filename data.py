@@ -13,6 +13,8 @@ from config import (
     EXPECTED_SAMPLING_SECONDS,
     FAILURES,
     GAP_THRESHOLD,
+    MOTOR_CURRENT_COLUMN,
+    OPERATING_MOTOR_CURRENT_AMPS,
     WARNING_HORIZON,
 )
 
@@ -49,7 +51,7 @@ def load_dataset(csv_path: Path = DATA_FILE) -> pd.DataFrame:
     return readings
 
 
-def make_labels(readings: pd.DataFrame) -> pd.Series:
+def make_labels(timestamps: pd.DatetimeIndex) -> pd.Series:
     """Create binary risk labels for predictive maintenance.
 
     Risk labeling logic:
@@ -58,23 +60,24 @@ def make_labels(readings: pd.DataFrame) -> pd.Series:
     - y = 0 (Normal): All other normal operating rows
 
     Args:
-        readings: pd.DataFrame indexed by timestamp
+        timestamps: The timestamps to label (agreed interface: timestamps in,
+            so it works for raw readings and for the 1-minute feature grid).
 
     Returns:
         pd.Series containing 0.0, 1.0, or NaN values indexed by timestamp.
     """
-    labels = pd.Series(0.0, index=readings.index, name="target")
+    labels = pd.Series(0.0, index=timestamps, name="target")
 
     for failure in FAILURES:
         # Define 3-hour warning window prior to failure start
         warning_start = failure.start - WARNING_HORIZON
 
         # Label 3-hour advance warning window as Risk (y = 1.0)
-        risk_mask = (readings.index >= warning_start) & (readings.index < failure.start)
+        risk_mask = (timestamps >= warning_start) & (timestamps < failure.start)
         labels.loc[risk_mask] = 1.0
 
         # Exclude rows during failure and repair periods (y = NaN)
-        exclusion_mask = (readings.index >= failure.start) & (readings.index <= failure.excluded_until)
+        exclusion_mask = (timestamps >= failure.start) & (timestamps <= failure.excluded_until)
         labels.loc[exclusion_mask] = np.nan
 
     return labels
@@ -84,7 +87,8 @@ def calculate_operating_hours_and_budget(readings: pd.DataFrame) -> dict:
     """Calculate total active operating hours and the False-Alarm Budget (Condition 4).
 
     Condition 4 Requirement:
-    - Operating assumption: Motor Current > 1.0 A defines active train operation.
+    - Operating assumption: motor current above OPERATING_MOTOR_CURRENT_AMPS
+      (config.py) defines active train operation.
     - False-alarm budget: Maximum 1 false alert per 100 operating hours (~1 per week at 14h/day).
 
     Args:
@@ -93,13 +97,8 @@ def calculate_operating_hours_and_budget(readings: pd.DataFrame) -> dict:
     Returns:
         dict containing total operating hours, active rows, and max false-alarm count.
     """
-    # Active operation mask (Motor current > 1.0 A or TP2 > 1.0 bar)
-    if "Motor_current" in readings.columns:
-        active_mask = readings["Motor_current"] > 1.0
-    elif "TP2" in readings.columns:
-        active_mask = readings["TP2"] > 1.0
-    else:
-        active_mask = pd.Series(True, index=readings.index)
+    # Active operation mask: one definition, shared with the duty-cycle feature
+    active_mask = readings[MOTOR_CURRENT_COLUMN] > OPERATING_MOTOR_CURRENT_AMPS
 
     active_rows = int(active_mask.sum())
 
