@@ -1,4 +1,4 @@
-"""Week 1 first result: rule baselines and Random Forest on the time-respecting fold.
+"""Week 1 first result: rule baselines, Random Forest and Isolation Forest on the time-respecting fold.
 
 Train on F1-F3, test on F4 (cut at config.TEST_START). Every method is judged
 at event level: was the failure caught, with how many hours of warning, and how
@@ -24,7 +24,7 @@ from config import (
 )
 from data import load_dataset, make_labels
 from features import build_features
-from models import predict_alarms, train_random_forest
+from models import IsolationForestDetector, predict_random_forest_alarms, train_random_forest
 from rules import LowPressureRule, lowest_pressure_per_minute, lps_alarm_per_minute
 
 NON_FEATURE_COLUMNS = ["label", "lps_alarm", "lowest_pressure", "operating"]
@@ -98,6 +98,8 @@ def main() -> None:
         train["lowest_pressure"], train["label"], train["operating"])
     print(f"Pressure cut-off set on training data: {low_pressure_rule.pressure_cutoff:.3f}")
     forest = train_random_forest(train[feature_names], train["label"])
+    isolation_detector = IsolationForestDetector(FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET).fit(
+        train[feature_names], train["label"], train["operating"])
 
     held_out_failure = FAILURES[-1]
     results = pd.DataFrame(
@@ -107,7 +109,9 @@ def main() -> None:
             "Low pressure (TP3/Reservoirs)": judge_alarms(
                 low_pressure_rule.predict(test["lowest_pressure"]), test, held_out_failure.start),
             "Random Forest": judge_alarms(
-                predict_alarms(forest, test[feature_names]), test, held_out_failure.start),
+                predict_random_forest_alarms(forest, test[feature_names]), test, held_out_failure.start),
+            "Isolation Forest": judge_alarms(
+                isolation_detector.predict(test[feature_names]), test, held_out_failure.start),
         }
     )
     print(f"\nHeld-out failure {held_out_failure.name}, budget "

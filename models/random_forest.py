@@ -1,4 +1,4 @@
-"""Random Forest baseline."""
+"""Random Forest baseline (supervised: learns risk vs normal from the labels)."""
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
@@ -24,7 +24,7 @@ def train_random_forest(features_training: pd.DataFrame, labels_training: pd.Ser
     return forest.fit(features_training, labels_training.astype(int))
 
 
-def predict_alarms(forest: RandomForestClassifier, features: pd.DataFrame) -> pd.Series:
+def predict_random_forest_alarms(forest: RandomForestClassifier, features: pd.DataFrame) -> pd.Series:
     """Raise an alarm when the predicted risk probability reaches the config threshold.
 
     Args:
