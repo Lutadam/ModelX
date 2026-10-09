@@ -60,10 +60,17 @@ class EvalConfig:
 
     warning_horizon: length of the risk window before a failure (N hours).
     alert_cooldown: alarm minutes closer than this form ONE alert (one inspection).
+    realert_after: an alarm still on this long after its alert began counts as
+        a NEW alert (the depot would inspect again the next night). Without it
+        a model that alarms every minute forms one endless burst, counts as a
+        single false alert, passes the budget and "catches" every failure.
     purge_gap: training rows this close to the test block are dropped (leakage).
     budget_per_operating_hour: most false alerts allowed per operating hour
         (feedback condition 4; 1/100 = one per 100 operating hours).
     f_beta: beta of the F-score; 2 weights recall above precision.
+    time_ordered_failure: the one fold that respects time order (train on the
+        earlier failures only). Reported separately as the most realistic result
+        (response to feedback, condition 2).
     unknown_onset: failures whose start time is a placeholder, so their
         hours of warning are not reported (F1 is logged as a whole day).
 
@@ -73,9 +80,11 @@ class EvalConfig:
 
     warning_horizon: pd.Timedelta = pd.Timedelta(hours=3)
     alert_cooldown: pd.Timedelta = pd.Timedelta(hours=3)
-    purge_gap: pd.Timedelta = pd.Timedelta(hours=24)
+    realert_after: pd.Timedelta = pd.Timedelta(hours=24)
+    purge_gap: pd.Timedelta = pd.Timedelta(hours=24)  # must be >= minimum_purge_gap(...), see below
     budget_per_operating_hour: float = 1 / 100
     f_beta: float = 2.0
+    time_ordered_failure: str = "F4"
     unknown_onset: set = field(default_factory=lambda: {"F1"})
 
     @classmethod
@@ -133,6 +142,27 @@ class Fold(NamedTuple):
     held_out: Failure
     test_start: pd.Timestamp
     test_end: pd.Timestamp
+
+
+def minimum_purge_gap(sequence_length: pd.Timedelta,
+                      rolling_window: pd.Timedelta = pd.Timedelta(minutes=60)) -> pd.Timedelta:
+    """Smallest purge gap allowed (response to feedback, condition 2).
+
+    The gap must be at least the model's input sequence length plus the
+    longest rolling-feature window, so no training input overlaps the test
+    block. Use the CNN+GRU's sequence length here; the 24 h default must not
+    be smaller than this.
+    """
+    return sequence_length + rolling_window
+
+
+def check_purge_gap(config: "EvalConfig", sequence_length: pd.Timedelta,
+                    rolling_window: pd.Timedelta = pd.Timedelta(minutes=60)) -> None:
+    """Raise if config.purge_gap is shorter than the rule above allows."""
+    needed = minimum_purge_gap(sequence_length, rolling_window)
+    if config.purge_gap < needed:
+        raise ValueError(f"purge_gap {config.purge_gap} is shorter than sequence length + rolling "
+                         f"window = {needed}. Raise purge_gap in EvalConfig.")
 
 
 def make_folds(data_start: pd.Timestamp, data_end: pd.Timestamp, failures: list) -> list:
@@ -195,12 +225,28 @@ def describe_folds(minutes: pd.DataFrame, folds: list, config: EvalConfig) -> pd
 # ============================================================ alerts
 
 def alert_starts(alarm: pd.Series, config: EvalConfig) -> pd.DatetimeIndex:
-    """Start time of each alert. A new alert begins after a quiet spell > cooldown."""
+    """Start time of each alert (each alert = one inspection).
+
+    A new alert begins (a) after a quiet spell longer than alert_cooldown, or
+    (b) when an alarm is still on realert_after since the current alert began.
+    """
     times = alarm.index[alarm.to_numpy(dtype=bool)]
     if len(times) == 0:
         return times
-    new_alert = np.concatenate([[True], np.diff(times.to_numpy()) > config.alert_cooldown.to_timedelta64()])
-    return times[new_alert]
+    values = times.to_numpy()
+    # (a) bursts: split wherever the gap between alarm minutes exceeds the cooldown
+    burst_start = np.concatenate([[True], np.diff(values) > config.alert_cooldown.to_timedelta64()])
+    burst_positions = np.flatnonzero(burst_start)
+    burst_ends = np.append(burst_positions[1:], len(values))
+    realert = config.realert_after.to_timedelta64()
+    starts = []
+    for first, stop in zip(burst_positions, burst_ends):
+        # (b) inside a long burst, re-alert at the first alarm minute >= previous start + realert_after
+        current = first
+        while current < stop:
+            starts.append(values[current])
+            current = first + np.searchsorted(values[first:stop], values[current] + realert, side="left")
+    return pd.DatetimeIndex(starts)
 
 
 def count_false_alerts(alarm: pd.Series, labels: pd.Series, config: EvalConfig) -> int:
@@ -311,6 +357,7 @@ def evaluate_fold(method: str, fold: Fold, test: pd.DataFrame, alarm: pd.Series,
         "warning_hours": round((failure.start - hits[0]).total_seconds() / 3600, 2)
         if caught and onset_known else float("nan"),
         "onset_known": onset_known,
+        "time_ordered": failure.name == config.time_ordered_failure,
         "alarm_minutes_in_window": int(alarm[in_window].sum()),
         "false_alerts": false_alerts,
         "normal_operating_hours": round(hours, 1),
@@ -343,24 +390,45 @@ def probability_at_least(k: int, chances: list) -> float:
     return float(distribution[k:].sum())
 
 
+def per_fold_values(group: pd.DataFrame, column: str) -> str:
+    """One value per fold as text, e.g. 'F1 0.12, F2 0.40', so nothing is averaged."""
+    return ", ".join(f"{row.failure} {getattr(row, column):.3g}" for row in group.itertuples())
+
+
+def time_ordered_result(group: pd.DataFrame) -> str:
+    """The time-ordered fold's result in one phrase, or '' if that fold is absent."""
+    if "time_ordered" not in group or not group["time_ordered"].any():
+        return ""
+    row = group[group["time_ordered"]].iloc[0]
+    if not row["caught"]:
+        return f"{row['failure']} missed, {row['false_alerts']} false alerts"
+    return f"{row['failure']} caught, {row['warning_hours']:.2f} h warning, {row['false_alerts']} false alerts"
+
+
 def summarise(per_fold: pd.DataFrame) -> pd.DataFrame:
-    """One row per method. False-alert rates are POOLED (total / total), not averaged,
-    so a short test block does not count as much as a long one."""
+    """One row per method across folds. Nothing is averaged: failures caught is a
+    count ("2 of 4"), PR-AUC and F2 are listed per fold, the time-ordered fold
+    is shown on its own, and false-alert rates are POOLED (total alerts / total
+    hours), so a short test block does not count as much as a long one."""
     rows = {}
     for method, group in per_fold.groupby("method", sort=False):
         caught = int(group["caught"].sum())
-        warnings = group.loc[group["caught"] & group["onset_known"], "warning_hours"]
+        warnings = group.loc[group["caught"] & group["onset_known"], ["failure", "warning_hours"]]
         hours, weeks = group["normal_operating_hours"].sum(), group["normal_weeks"].sum()
         rows[method] = {
             "failures caught": f"{caught} of {len(group)}",
             "caught": ", ".join(group.loc[group["caught"], "failure"]) or "none",
-            "median warning hours (known onset)": round(warnings.median(), 2) if len(warnings) else float("nan"),
+            "warning hours per fold": ", ".join(
+                f"{row.failure} {row.warning_hours:.2f}" for row in warnings.itertuples()) or "none",
             "false alerts": int(group["false_alerts"].sum()),
             "false alerts per 100 operating hours": round(100 * group["false_alerts"].sum() / hours, 2) if hours else float("nan"),
             "false alerts per week": round(group["false_alerts"].sum() / weeks, 2) if weeks else float("nan"),
             "P(this many catches by luck)": f"{probability_at_least(caught, list(group['chance_caught_by_luck'])):.1e}",
-            "mean PR-AUC": round(group["pr_auc"].mean(), 4),
-            "mean F2": round(group["f2"].mean(), 4),
+            # Per fold, never averaged (response to feedback, condition 2):
+            "PR-AUC per fold": per_fold_values(group, "pr_auc"),
+            "F2 per fold": per_fold_values(group, "f2"),
+            # The fold that respects time order, reported on its own:
+            "time-ordered fold": time_ordered_result(group),
         }
     return pd.DataFrame(rows).T
 
