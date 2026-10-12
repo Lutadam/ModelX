@@ -10,11 +10,9 @@ import pandas as pd
 
 from config import (
     DATA_FILE,
-    EXPECTED_SAMPLING_SECONDS,
     FAILURES,
+    FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
     GAP_THRESHOLD,
-    MOTOR_CURRENT_COLUMN,
-    OPERATING_MOTOR_CURRENT_AMPS,
     WARNING_HORIZON,
 )
 
@@ -83,45 +81,53 @@ def make_labels(timestamps: pd.DatetimeIndex) -> pd.Series:
     return labels
 
 
-def calculate_operating_hours_and_budget(readings: pd.DataFrame) -> dict:
-    """Calculate total active operating hours and the False-Alarm Budget (Condition 4).
+def operating_hours_and_budget(operating_per_minute: pd.Series) -> dict:
+    """Operating hours and the false-alarm budget (Condition 4) from per-minute flags.
 
-    Condition 4 Requirement:
-    - Operating assumption: motor current above OPERATING_MOTOR_CURRENT_AMPS
-      (config.py) defines active train operation.
-    - False-alarm budget: Maximum 1 false alert per 100 operating hours (~1 per week at 14h/day).
+    One definition of an operating hour for the whole project: a minute counts
+    as operating when its mean motor current is above OPERATING_MOTOR_CURRENT_AMPS
+    (alerts.operating_per_minute, the same flag the evaluation uses).
+    The budget is 1 false alert per 100 operating hours. The motor is on about
+    9 h per day on average (horizon_figure.py), so that is about 1 false alert
+    per 11 days.
 
     Args:
-        readings: pd.DataFrame containing sensor columns
+        operating_per_minute: 1.0 for minutes with the motor on, 0.0 otherwise.
 
     Returns:
-        dict containing total operating hours, active rows, and max false-alarm count.
+        dict with total_minutes, operating_minutes, total_operating_hours and
+        max_false_alarms_budget.
     """
-    # Active operation mask: one definition, shared with the duty-cycle feature
-    active_mask = readings[MOTOR_CURRENT_COLUMN] > OPERATING_MOTOR_CURRENT_AMPS
-
-    active_rows = int(active_mask.sum())
-
-    # Calculate operating hours (each row is nominally 10 seconds = 0.1 Hz)
-    total_operating_hours = (active_rows * EXPECTED_SAMPLING_SECONDS) / 3600.0
-
-    # Enforce budget: 1 false alert per 100 operating hours
-    max_false_alarms = int(total_operating_hours // 100)
-
-    stats = {
-        "total_rows": len(readings),
-        "active_rows": active_rows,
+    operating_minutes = int(operating_per_minute.sum())
+    total_operating_hours = operating_minutes / 60
+    return {
+        "total_minutes": len(operating_per_minute),
+        "operating_minutes": operating_minutes,
         "total_operating_hours": round(total_operating_hours, 2),
-        "max_false_alarms_budget": max_false_alarms,
+        "max_false_alarms_budget": int(total_operating_hours * FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET),
     }
 
-    print("==================================================")
-    print(" SHAZIA'S DATA & CONDITION 4 BUDGET SUMMARY")
-    print("==================================================")
-    print(f" Total Rows Loaded:           {stats['total_rows']:,}")
-    print(f" Active Operating Rows:       {stats['active_rows']:,}")
-    print(f" Total Active Operating Time: {stats['total_operating_hours']} hours")
-    print(f" Condition 4 Budget:          Max {stats['max_false_alarms_budget']} False Alerts")
-    print("==================================================")
 
+def calculate_operating_hours_and_budget(readings: pd.DataFrame, verbose: bool = True) -> dict:
+    """Operating hours and the false-alarm budget of the raw readings (Condition 4).
+
+    Args:
+        readings: Output of `load_dataset`.
+        verbose: Print the summary box.
+
+    Returns:
+        The dict of `operating_hours_and_budget`, plus total_rows.
+    """
+    from alerts import operating_per_minute  # imported here: alerts imports the evaluation module
+
+    stats = {"total_rows": len(readings), **operating_hours_and_budget(operating_per_minute(readings))}
+    if verbose:
+        print("==================================================")
+        print(" SHAZIA'S DATA & CONDITION 4 BUDGET SUMMARY")
+        print("==================================================")
+        print(f" Total Rows Loaded:           {stats['total_rows']:,}")
+        print(f" Operating Minutes:           {stats['operating_minutes']:,}")
+        print(f" Total Active Operating Time: {stats['total_operating_hours']} hours")
+        print(f" Condition 4 Budget:          Max {stats['max_false_alarms_budget']} False Alerts")
+        print("==================================================")
     return stats

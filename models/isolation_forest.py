@@ -4,7 +4,7 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from alerts import count_false_alerts, operating_hours_of_normal_minutes
-from config import ISOLATION_FOREST_TREES, RANDOM_SEED
+from config import ISOLATION_FOREST_TREES, RANDOM_SEED, THRESHOLD_CANDIDATES
 
 
 class IsolationForestDetector:
@@ -38,6 +38,27 @@ class IsolationForestDetector:
         """
         return pd.Series(-self.forest.score_samples(features), index=features.index)
 
+    def fit_forest(self, features_training: pd.DataFrame, labels_training: pd.Series) -> "IsolationForestDetector":
+        """Train on the normal training minutes only, without setting a cut-off.
+
+        Use this when the cut-off is set elsewhere (run_folds.py sets it from
+        out-of-sample scores), so the cut-off search in `fit` is not wasted.
+
+        Args:
+            features_training: Feature rows with no NaN, training period only.
+            labels_training: Labels from `make_labels`, aligned to the features.
+
+        Returns:
+            The detector (self), ready for `anomaly_scores`.
+        """
+        is_normal = (labels_training == 0).fillna(False).to_numpy(dtype=bool)
+        self.forest = IsolationForest(
+            n_estimators=ISOLATION_FOREST_TREES,
+            random_state=RANDOM_SEED,
+            n_jobs=-1,
+        ).fit(features_training[is_normal])
+        return self
+
     def fit(self, features_training: pd.DataFrame, labels_training: pd.Series,
             operating_training: pd.Series) -> "IsolationForestDetector":
         """Train on the normal training minutes, then set the score cut-off.
@@ -59,15 +80,10 @@ class IsolationForestDetector:
         if normal_operating_hours == 0:
             raise ValueError("No operating hours in the normal training minutes.")
 
-        self.forest = IsolationForest(
-            n_estimators=ISOLATION_FOREST_TREES,
-            random_state=RANDOM_SEED,
-            n_jobs=-1,
-        ).fit(features_training[is_normal])
-
+        self.fit_forest(features_training, labels_training)
         training_scores = self.anomaly_scores(features_training)
         normal_scores = training_scores[is_normal]
-        candidate_cutoffs = np.unique(normal_scores.quantile(np.linspace(0.5, 1.0, 501)))[::-1]
+        candidate_cutoffs = np.unique(normal_scores.quantile(np.linspace(0.5, 1.0, THRESHOLD_CANDIDATES)))[::-1]
         # The highest candidate equals the largest normal score, so nothing is above it: no alarms.
         self.score_cutoff = candidate_cutoffs[0]
         for candidate_cutoff in candidate_cutoffs[1:]:

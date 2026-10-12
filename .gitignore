@@ -12,6 +12,9 @@ __pycache__/
 *.csv
 metropt+3+dataset/
 
+# Saved per-minute table (rebuilt automatically)
+cache/
+
 # Model outputs
 *.pkl
 *.joblib

@@ -1,4 +1,7 @@
-﻿cloudpickle==3.1.2
+﻿# PyTorch: the CUDA 12.6 GPU build on Windows and Linux (NVIDIA driver for CUDA 12.x),
+# the normal build on a Mac (Apple GPU through MPS). See README (GPU).
+--extra-index-url https://download.pytorch.org/whl/cu126
+cloudpickle==3.1.2
 contourpy==1.4.0
 cycler==0.12.1
 fonttools==4.66.1
@@ -17,3 +20,5 @@ scipy==1.18.1
 six==1.17.0
 threadpoolctl==3.7.0
 tzdata==2026.4
+torch==2.14.1+cu126; sys_platform != "darwin"
+torch==2.14.1; sys_platform == "darwin"

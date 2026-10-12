@@ -1,15 +1,11 @@
-"""RailGuard AI: evaluation module (standalone).
+"""RailGuard AI: evaluation module.
 
 Owner: Lauthan Muhammad Hishaam Ibn Afzal (Evaluator & Ethics), Team ModelX.
 
-This is the `evaluate.py` listed as "still to come" in the team README.
-Self-contained on purpose: it imports nothing from the rest of the project,
-so it can be written and tested now and plugged in once everyone's code is
-merged. Everything it needs comes in as arguments. Once merged, build the
-settings from the team's config.py so the two never disagree:
+Every setting comes from config.py (see EvalConfig), so the evaluation and the
+rest of the project never disagree:
 
-    import config
-    settings = EvalConfig.from_project_config(config)
+    settings = EvalConfig()
     folds = make_folds(start, end, config.FAILURES)
 
 WHAT THE REST OF THE PROJECT MUST HAND OVER (the "contract")
@@ -18,9 +14,9 @@ WHAT THE REST OF THE PROJECT MUST HAND OVER (the "contract")
      label      1 = risk (the N hours before a failure), 0 = normal.
                 Failure / maintenance minutes must already be removed.
      operating  1 if the compressor ran in that minute, else 0.
-   main.build_minute_table() gives exactly this (plus lps_alarm,
+   minute_table.build_minute_table() gives exactly this (plus lps_alarm,
    lowest_pressure and the features).
-2. The list of failures: config.FAILURES, or METROPT_FAILURES below (a copy).
+2. The list of failures: config.FAILURES.
 3. For each method and fold: a risk score per test minute (higher = riskier),
    or, for a fixed rule, a True/False alarm per test minute.
 
@@ -49,6 +45,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score, fbeta_score, precision_score, recall_score
 
+import config as project_config  # not "config": functions here take an EvalConfig named config
+
 MINUTES_PER_WEEK = 60 * 24 * 7
 
 
@@ -56,7 +54,7 @@ MINUTES_PER_WEEK = 60 * 24 * 7
 
 @dataclass
 class EvalConfig:
-    """Every evaluation setting in one place. Change values here, not in code.
+    """Every evaluation setting. The defaults come from config.py: change them there.
 
     warning_horizon: length of the risk window before a failure (N hours).
     alert_cooldown: alarm minutes closer than this form ONE alert (one inspection).
@@ -73,64 +71,39 @@ class EvalConfig:
         (response to feedback, condition 2).
     unknown_onset: failures whose start time is a placeholder, so their
         hours of warning are not reported (F1 is logged as a whole day).
-
-    The first, second and fourth defaults equal config.WARNING_HORIZON,
-    config.ALERT_COOLDOWN and config.FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET.
     """
 
-    warning_horizon: pd.Timedelta = pd.Timedelta(hours=3)
-    alert_cooldown: pd.Timedelta = pd.Timedelta(hours=3)
-    realert_after: pd.Timedelta = pd.Timedelta(hours=24)
-    purge_gap: pd.Timedelta = pd.Timedelta(hours=24)  # must be >= minimum_purge_gap(...), see below
-    budget_per_operating_hour: float = 1 / 100
-    f_beta: float = 2.0
-    time_ordered_failure: str = "F4"
-    unknown_onset: set = field(default_factory=lambda: {"F1"})
+    warning_horizon: pd.Timedelta = project_config.WARNING_HORIZON
+    alert_cooldown: pd.Timedelta = project_config.ALERT_COOLDOWN
+    realert_after: pd.Timedelta = project_config.REALERT_AFTER
+    purge_gap: pd.Timedelta = project_config.PURGE_GAP  # must be >= minimum_purge_gap(...), see below
+    budget_per_operating_hour: float = project_config.FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET
+    f_beta: float = project_config.F_BETA
+    time_ordered_failure: str = project_config.TIME_ORDERED_FAILURE
+    unknown_onset: set = field(default_factory=lambda: set(project_config.UNKNOWN_ONSET_FAILURES))
 
     @classmethod
-    def from_project_config(cls, project_config, **overrides) -> "EvalConfig":
-        """Settings taken from the team's config.py module (passed in, not imported).
+    def from_project_config(cls, project_config=project_config, **overrides) -> "EvalConfig":
+        """Settings from config.py, with any field changed by `overrides` (e.g. purge_gap).
 
-        Args:
-            project_config: The imported `config` module.
-            **overrides: Any field to set differently, e.g. purge_gap.
-
-        Returns:
-            An EvalConfig whose shared values match config.py.
+        Kept so older calls keep working; `EvalConfig(**overrides)` does the same.
         """
         shared = {
             "warning_horizon": project_config.WARNING_HORIZON,
             "alert_cooldown": project_config.ALERT_COOLDOWN,
+            "realert_after": project_config.REALERT_AFTER,
+            "purge_gap": project_config.PURGE_GAP,
             "budget_per_operating_hour": project_config.FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
+            "f_beta": project_config.F_BETA,
+            "time_ordered_failure": project_config.TIME_ORDERED_FAILURE,
+            "unknown_onset": set(project_config.UNKNOWN_ONSET_FAILURES),
         }
         return cls(**{**shared, **overrides})
 
 
-class Failure(NamedTuple):
-    """One failure, same fields as config.Failure, so config.FAILURES works here too.
-
-    Rows from `start` up to and including `excluded_until` are dropped.
-    `excluded_until` = end of maintenance where known, otherwise the failure end.
-    """
-
-    name: str
-    start: pd.Timestamp
-    end: pd.Timestamp
-    excluded_until: pd.Timestamp
-
-
-# Copy of config.FAILURES (renumbered: the UCI table lists #1 twice).
-# If the team corrects a date, correct it in config.py and pass config.FAILURES.
-METROPT_FAILURES = [
-    Failure("F1", pd.Timestamp("2020-04-18 00:00"), pd.Timestamp("2020-04-18 23:59"),
-            pd.Timestamp("2020-04-18 23:59")),
-    Failure("F2", pd.Timestamp("2020-05-29 23:30"), pd.Timestamp("2020-05-30 06:00"),
-            pd.Timestamp("2020-05-30 06:00")),
-    Failure("F3", pd.Timestamp("2020-06-05 10:00"), pd.Timestamp("2020-06-07 14:30"),
-            pd.Timestamp("2020-06-08 16:00")),  # maintenance finished 8 Jun 16:00
-    Failure("F4", pd.Timestamp("2020-07-15 14:30"), pd.Timestamp("2020-07-15 19:00"),
-            pd.Timestamp("2020-07-16 00:00")),  # maintenance finished 16 Jul 00:00
-]
+# One definition of a failure and one list of failures: both live in config.py.
+Failure = project_config.Failure
+METROPT_FAILURES = project_config.FAILURES
 
 
 # ============================================================ folds
@@ -280,7 +253,7 @@ def threshold_for_budget(scores: pd.Series, labels: pd.Series, operating: pd.Ser
     normal = (labels == 0).to_numpy()
     if normal_operating_hours(labels, operating) == 0:
         raise ValueError("No normal operating hours to set a threshold on.")
-    candidates = np.unique(scores[normal].quantile(np.linspace(0.5, 1.0, 501)))[::-1]  # strictest first
+    candidates = np.unique(scores[normal].quantile(np.linspace(0.5, 1.0, project_config.THRESHOLD_CANDIDATES)))[::-1]  # strictest first
     threshold = np.inf
     for candidate in candidates:
         if false_alert_rate(scores >= candidate, labels, operating, config) > config.budget_per_operating_hour:
@@ -384,9 +357,9 @@ def probability_at_least(k: int, chances: list) -> float:
     """P(at least k successes) for independent events with different chances (exact)."""
     distribution = np.zeros(len(chances) + 1)
     distribution[0] = 1.0
-    for p in chances:
-        distribution[1:] = distribution[1:] * (1 - p) + distribution[:-1] * p
-        distribution[0] *= 1 - p
+    for chance in chances:
+        distribution[1:] = distribution[1:] * (1 - chance) + distribution[:-1] * chance
+        distribution[0] *= 1 - chance
     return float(distribution[k:].sum())
 
 
@@ -415,8 +388,11 @@ def summarise(per_fold: pd.DataFrame) -> pd.DataFrame:
         caught = int(group["caught"].sum())
         warnings = group.loc[group["caught"] & group["onset_known"], ["failure", "warning_hours"]]
         hours, weeks = group["normal_operating_hours"].sum(), group["normal_weeks"].sum()
+        known_onset = group[group["onset_known"]]
         rows[method] = {
             "failures caught": f"{caught} of {len(group)}",
+            # F1's start is a placeholder (and the train was off before it), so it is also counted without it:
+            "caught, known onset": f"{int(known_onset['caught'].sum())} of {len(known_onset)}",
             "caught": ", ".join(group.loc[group["caught"], "failure"]) or "none",
             "warning hours per fold": ", ".join(
                 f"{row.failure} {row.warning_hours:.2f}" for row in warnings.itertuples()) or "none",
@@ -435,7 +411,7 @@ def summarise(per_fold: pd.DataFrame) -> pd.DataFrame:
 
 # ============================================================ outputs
 
-def save_results(per_fold: pd.DataFrame, summary: pd.DataFrame, folder: Path = Path("results")) -> None:
+def save_results(per_fold: pd.DataFrame, summary: pd.DataFrame, folder: Path = project_config.RESULTS_DIR) -> None:
     """Write the files the report is built from. Never retype numbers from the console."""
     folder.mkdir(parents=True, exist_ok=True)
     per_fold.to_csv(folder / "per_fold.csv", index=False)
@@ -447,11 +423,12 @@ def save_results(per_fold: pd.DataFrame, summary: pd.DataFrame, folder: Path = P
 
 def plot_fold(method: str, fold: Fold, test: pd.DataFrame, alarm: pd.Series, config: EvalConfig,
               scores: pd.Series | None = None, threshold: float | None = None,
-              folder: Path = Path("figures")) -> Path:
-    """48 h before the failure: score, threshold, alarms. Raw material for error analysis
+              folder: Path = project_config.FIGURES_DIR) -> Path:
+    """The hours around the failure (config.FIGURE_HOURS_*): score, threshold, alarms. Raw material for error analysis
     (did the score never rise, or rise but stay under the threshold?)."""
     failure = fold.held_out
-    shown = (test.index >= failure.start - pd.Timedelta(hours=48)) & (test.index < failure.start + pd.Timedelta(hours=2))
+    shown = ((test.index >= failure.start - pd.Timedelta(hours=project_config.FIGURE_HOURS_BEFORE_FAILURE))
+             & (test.index < failure.start + pd.Timedelta(hours=project_config.FIGURE_HOURS_AFTER_FAILURE)))
     window = test.index[shown]
     figure, axis = plt.subplots(figsize=(10, 3.2))
     axis.axvspan(failure.start - config.warning_horizon, failure.start, color="tab:orange", alpha=0.15,
