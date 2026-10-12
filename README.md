@@ -117,6 +117,6 @@ Risk is the 3 hours before a failure starts: `[start - 3h, start)`. Rows from th
 | Atul | `config.py`, rules, alerts (now the same alert rule as the evaluation), Random Forest (budget threshold, no fixed 0.5), Isolation Forest, their tests | |
 | Hishaam | `evaluation.py` (now also counts catches with a known onset) and its tests, `horizon_figure.py` | |
 | Hitesh | CNN+GRU design and notebook | `folds.py` and `models/` were written from his notebook with Claude, not by Hitesh. He needs to review them, and to decide whether the model should be tuned (see Limitations) |
-| Whole team | | Commit `results/` once the numbers for the report are final |
+| Whole team | | Commit `results/` and `figures/` once the numbers for the report are final. Both are in `.gitignore` (every run recreates them), so add them with `git add -f results/ figures/` |
 
 The proposal feedback text was not available when this table was written, so conditions are checked only against what the code says: condition 2 (folds) and refinement 3 (purge check) are implemented, condition 3 and refinement 1 (horizon) have `horizon_figure.py`, condition 4 (budget) is in the thresholds, refinement 2 (operating hours) rests on the 1.0 A placeholder.
