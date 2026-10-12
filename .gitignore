@@ -12,11 +12,25 @@ __pycache__/
 *.csv
 metropt+3+dataset/
 
+# Saved per-minute table (rebuilt automatically)
+cache/
+
+# Outputs of main.py and horizon_figure.py (recreated by every run).
+# To commit the final numbers for the report: git add -f results/ figures/
+results/
+figures/
+
 # Model outputs
 *.pkl
 *.joblib
 *.pt
 *.pth
+
+# Logs
+*.log
+
+# Personal Claude Code settings
+.claude/settings.local.json
 
 # Editor and OS
 .vscode/

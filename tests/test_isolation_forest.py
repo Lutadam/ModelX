@@ -40,9 +40,9 @@ def test_isolation_forest(train, test, feature_names) -> object:
 
 def main() -> None:
     common.print_header("RUNNING ATUL'S ISOLATION FOREST TESTS")
-    common.test_alerts()
-    common.test_low_pressure_rule_budget()
     train, test, feature_names = common.load_train_test()
+    common.test_alerts(test)
+    common.test_low_pressure_rule_budget(train)
     alarms = test_isolation_forest(train, test, feature_names)
     common.print_result("Isolation Forest", alarms, train, test)
     common.finish()

@@ -1,20 +1,20 @@
 """Turning per-minute alarms into alerts, and counting them against the budget.
 
 An alert is one burst of alarm minutes: it costs one inspection however long
-it lasts. These helpers are what the baselines need to set a threshold and to
-report the event-level first result. Hishaam's evaluate.py will hold the full
-evaluation.
+it lasts. The definition of an alert lives in ONE place, evaluation.alert_starts
+(cooldown, plus a new alert when an alarm stays on for REALERT_AFTER), so the
+thresholds set here are judged by the same rule in the evaluation.
 """
-import numpy as np
 import pandas as pd
 
 from config import (
-    ALERT_COOLDOWN,
+    FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
     FEATURE_STEP,
     MOTOR_CURRENT_COLUMN,
     OPERATING_MOTOR_CURRENT_AMPS,
     WARNING_HORIZON,
 )
+from evaluation import EvalConfig, alert_starts
 
 
 def operating_per_minute(readings: pd.DataFrame) -> pd.Series:
@@ -33,10 +33,10 @@ def operating_per_minute(readings: pd.DataFrame) -> pd.Series:
 
 
 def alert_start_times(alarm: pd.Series) -> pd.DatetimeIndex:
-    """Return the time each alert begins.
+    """Return the time each alert begins (same rule as the evaluation).
 
-    A new alert starts at an alarm minute when more than ALERT_COOLDOWN has
-    passed since the previous alarm minute.
+    A new alert starts after more than ALERT_COOLDOWN without an alarm, or when
+    an alarm is still on REALERT_AFTER after the current alert began.
 
     Args:
         alarm: Boolean alarm series on a DatetimeIndex, sorted by time.
@@ -44,14 +44,7 @@ def alert_start_times(alarm: pd.Series) -> pd.DatetimeIndex:
     Returns:
         Timestamps of the alert starts.
     """
-    alarm_times = alarm.index[alarm.to_numpy(dtype=bool)]
-    if len(alarm_times) == 0:
-        return alarm_times
-    time_since_previous_alarm = np.diff(alarm_times.to_numpy())
-    starts_new_alert = np.concatenate(
-        [[True], time_since_previous_alarm > ALERT_COOLDOWN.to_timedelta64()]
-    )
-    return alarm_times[starts_new_alert]
+    return alert_starts(alarm, EvalConfig())
 
 
 def count_false_alerts(alarm: pd.Series, labels: pd.Series) -> int:
@@ -100,3 +93,29 @@ def detect_failure(alarm: pd.Series, failure_start: pd.Timestamp) -> dict:
     if len(alarm_times_in_window) == 0:
         return {"caught": False, "warning_hours": 0.0}
     return {"caught": True, "warning_hours": (failure_start - alarm_times_in_window[0]).total_seconds() / 3600}
+
+
+def judge_alarms(alarm: pd.Series, test: pd.DataFrame, test_failure_start: pd.Timestamp) -> dict:
+    """Event-level result of one method on one test block.
+
+    Args:
+        alarm: Boolean alarm series aligned to `test`.
+        test: The test rows from `build_minute_table`.
+        test_failure_start: Start time of the held-out failure.
+
+    Returns:
+        Dict with caught, warning_hours, false_alerts, normal_operating_hours,
+        false_alerts_per_100_operating_hours and within_budget.
+    """
+    detection = detect_failure(alarm, test_failure_start)
+    false_alerts = count_false_alerts(alarm, test["label"])
+    normal_operating_hours = operating_hours_of_normal_minutes(test["label"], test["operating"])
+    false_alerts_per_operating_hour = false_alerts / normal_operating_hours if normal_operating_hours else float("nan")
+    return {
+        "caught": detection["caught"],
+        "warning_hours": round(detection["warning_hours"], 2),
+        "false_alerts": false_alerts,
+        "normal_operating_hours": round(normal_operating_hours, 1),
+        "false_alerts_per_100_operating_hours": round(100 * false_alerts_per_operating_hour, 2),
+        "within_budget": false_alerts_per_operating_hour <= FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
+    }

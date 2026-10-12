@@ -139,6 +139,33 @@ def compute_duty_cycle_frequency_features(readings: pd.DataFrame, window: str = 
     return frequency_features
 
 
+def compute_motor_run_minutes(readings: pd.DataFrame) -> pd.Series:
+    """Minutes the compressor motor has been running without a stop.
+
+    A leak makes the compressor run on to hold the pressure, so an unusually
+    long run can be a warning. A minute counts as running when its mean motor
+    current is above OPERATING_MOTOR_CURRENT_AMPS (the project's one operating
+    definition, as in alerts.operating_per_minute). A stopped minute or a minute
+    with no readings starts the count again. Looks back only, so no leakage.
+
+    Added after horizon_figure.py showed F4 running 14.6 h without a stop
+    (normal maximum 1.8 h). F4's result with this feature is therefore not an
+    independent test; F1-F3 showed no such run.
+
+    Args:
+        readings: pd.DataFrame with the motor current column.
+
+    Returns:
+        pd.Series at FEATURE_STEP named `motor_run_minutes`.
+    """
+    mean_motor_current = readings[MOTOR_CURRENT_COLUMN].resample(FEATURE_STEP).mean()  # NaN for empty minutes
+    running = mean_motor_current > OPERATING_MOTOR_CURRENT_AMPS  # an empty minute counts as stopped
+    run_number = (~running).cumsum()
+    run_minutes = running.astype(int).groupby(run_number).cumsum().astype(float)
+    run_minutes.name = "motor_run_minutes"
+    return run_minutes
+
+
 def build_features(readings: pd.DataFrame) -> pd.DataFrame:
     """Master feature builder function matching the team interface contract.
 
@@ -162,7 +189,10 @@ def build_features(readings: pd.DataFrame) -> pd.DataFrame:
     # 2. Frequency features of the duty cycle, already one row per minute
     frequency_features = compute_duty_cycle_frequency_features(readings)
 
-    return pd.concat([features_per_minute, frequency_features], axis=1)
+    # 3. How long the motor has run without a stop, one row per minute
+    motor_run_minutes = compute_motor_run_minutes(readings)
+
+    return pd.concat([features_per_minute, frequency_features, motor_run_minutes], axis=1)
 
 
 def fit_pca_health_index(

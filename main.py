@@ -1,122 +1,72 @@
-"""Week 1 first result: rule baselines, Random Forest and Isolation Forest on the time-respecting fold.
+"""RailGuard AI: run every method on the four leave-one-failure-out folds.
 
-Train on F1-F3, test on F4 (cut at config.TEST_START). Every method is judged
-at event level: was the failure caught, with how many hours of warning, and how
-many false alerts per 100 operating hours against the budget. All methods use
-the same minutes: labelled, with complete features and sensor data.
+    python main.py
+
+Steps: check the GPU, load the per-minute table of the real MetroPT-3 data
+(cached after the first run), work out the false-alarm budget, make the folds
+and check the purge gap, judge each method the same way on each fold, save
+results/ and figures/.
 """
 import random
+import time
 
 import numpy as np
-import pandas as pd
 
-from alerts import (
-    count_false_alerts,
-    detect_failure,
-    operating_hours_of_normal_minutes,
-    operating_per_minute,
-)
-from config import (
-    FAILURES,
-    FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
-    RANDOM_SEED,
-    TEST_START,
-)
-from data import load_dataset, make_labels
-from features import build_features
-from models import IsolationForestDetector, predict_random_forest_alarms, train_random_forest
-from rules import LowPressureRule, lowest_pressure_per_minute, lps_alarm_per_minute
+import config
+from console import print_results, print_step, print_table, print_title, print_values
+from data import operating_hours_and_budget
+from evaluation import EvalConfig, describe_folds, save_results
+from folds import assert_purge_check, get_loeo_folds
+from minute_table import get_feature_names, load_minute_table
+from models.compute import describe_device, get_device
+from run_folds import build_scored_methods, run_all_folds
 
-NON_FEATURE_COLUMNS = ["label", "lps_alarm", "lowest_pressure", "operating"]
-
-
-def build_minute_table(readings: pd.DataFrame) -> pd.DataFrame:
-    """Put labels, rule inputs and features on one per-minute table.
-
-    Args:
-        readings: Output of `load_dataset`.
-
-    Returns:
-        One row per minute that has a label, complete features and sensor
-        data. Columns: `label`, `lps_alarm`, `lowest_pressure`, `operating`,
-        then the features.
-    """
-    features = build_features(readings)
-    minutes = features.index
-    table = pd.DataFrame(
-        {
-            "label": make_labels(minutes),
-            "lps_alarm": lps_alarm_per_minute(readings).reindex(minutes).astype(float),
-            "lowest_pressure": lowest_pressure_per_minute(readings).reindex(minutes),
-            "operating": operating_per_minute(readings).reindex(minutes),
-        },
-        index=minutes,
-    ).join(features)
-    return table.dropna()
-
-
-def judge_alarms(alarm: pd.Series, test: pd.DataFrame, test_failure_start: pd.Timestamp) -> dict:
-    """Event-level result of one method on the test fold.
-
-    Args:
-        alarm: Boolean alarm series aligned to `test`.
-        test: The test rows from `build_minute_table`.
-        test_failure_start: Start time of the held-out failure.
-
-    Returns:
-        Dict with caught, warning_hours, false_alerts, normal_operating_hours,
-        false_alerts_per_100_operating_hours and within_budget.
-    """
-    detection = detect_failure(alarm, test_failure_start)
-    false_alerts = count_false_alerts(alarm, test["label"])
-    normal_operating_hours = operating_hours_of_normal_minutes(test["label"], test["operating"])
-    false_alerts_per_operating_hour = false_alerts / normal_operating_hours if normal_operating_hours else float("nan")
-    return {
-        "caught": detection["caught"],
-        "warning_hours": round(detection["warning_hours"], 2),
-        "false_alerts": false_alerts,
-        "normal_operating_hours": round(normal_operating_hours, 1),
-        "false_alerts_per_100_operating_hours": round(100 * false_alerts_per_operating_hour, 2),
-        "within_budget": false_alerts_per_operating_hour <= FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
-    }
+STEP_COUNT = 5
 
 
 def main() -> None:
-    random.seed(RANDOM_SEED)
-    np.random.seed(RANDOM_SEED)
+    run_start = time.perf_counter()
+    random.seed(config.RANDOM_SEED)
+    np.random.seed(config.RANDOM_SEED)
+    print_title("RAILGUARD AI: four-fold evaluation on MetroPT-3")
 
-    readings = load_dataset()
-    print(f"{len(readings)} readings loaded")
-    minute_table = build_minute_table(readings)
-    train = minute_table[minute_table.index < TEST_START]
-    test = minute_table[minute_table.index >= TEST_START]
-    feature_names = [c for c in minute_table.columns if c not in NON_FEATURE_COLUMNS]
-    print(f"train: {len(train)} minutes, {int(train['label'].sum())} risk | "
-          f"test: {len(test)} minutes, {int(test['label'].sum())} risk")
+    print_step(1, STEP_COUNT, "Compute device")
+    device = get_device()  # first, so a missing GPU stops the run before the slow steps
+    print(f"  {describe_device(device)}")
 
-    low_pressure_rule = LowPressureRule(FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET).fit(
-        train["lowest_pressure"], train["label"], train["operating"])
-    print(f"Pressure cut-off set on training data: {low_pressure_rule.pressure_cutoff:.3f}")
-    forest = train_random_forest(train[feature_names], train["label"])
-    isolation_detector = IsolationForestDetector(FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET).fit(
-        train[feature_names], train["label"], train["operating"])
+    print_step(2, STEP_COUNT, "Per-minute table (real MetroPT-3 data)")
+    minute_table = load_minute_table(verbose=True)
+    feature_names = get_feature_names(minute_table)
+    print_values({
+        "Minutes": f"{len(minute_table):,}",
+        "Features": len(feature_names),
+        "Risk minutes": f"{int(minute_table['label'].sum()):,}",
+    })
 
-    held_out_failure = FAILURES[-1]
-    results = pd.DataFrame(
-        {
-            "LPS active (current practice)": judge_alarms(
-                test["lps_alarm"].astype(bool), test, held_out_failure.start),
-            "Low pressure (TP3/Reservoirs)": judge_alarms(
-                low_pressure_rule.predict(test["lowest_pressure"]), test, held_out_failure.start),
-            "Random Forest": judge_alarms(
-                predict_random_forest_alarms(forest, test[feature_names]), test, held_out_failure.start),
-            "Isolation Forest": judge_alarms(
-                isolation_detector.predict(test[feature_names]), test, held_out_failure.start),
-        }
-    )
-    print(f"\nHeld-out failure {held_out_failure.name}, budget "
-          f"{100 * FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET:.0f} false alert per 100 operating hours")
-    print(results.to_string())
+    print_step(3, STEP_COUNT, "False-alarm budget")
+    budget = operating_hours_and_budget(minute_table["operating"])
+    print_values({
+        "Operating minutes": f"{budget['operating_minutes']:,}",
+        "Operating hours": f"{budget['total_operating_hours']:,.1f}",
+        "Budget over these minutes": f"at most {budget['max_false_alarms_budget']} false alerts",
+    })
+
+    print_step(4, STEP_COUNT, "Folds and purge check")
+    settings = EvalConfig()  # every setting from config.py
+    folds = get_loeo_folds(minute_table, settings)
+    assert_purge_check(folds, minute_table, settings, verbose=False)
+    print(f"  Purge check passed for all {len(folds)} folds (gap {config.PURGE_GAP}).")
+    print_table(describe_folds(minute_table, folds, settings))
+
+    print_step(5, STEP_COUNT, "Training and judging every method on every fold")
+    scored_methods = build_scored_methods(feature_names, settings, device)
+    per_fold, summary = run_all_folds(minute_table, folds, scored_methods, settings)
+    save_results(per_fold, summary, config.RESULTS_DIR)
+
+    print_results(per_fold, summary, settings.budget_per_operating_hour)
+    print(f"\n  Files written: {config.RESULTS_DIR}/ (per_fold.csv, summary.csv, results.json), "
+          f"{config.FIGURES_DIR}/ (timelines)")
+    print(f"  Total time: {(time.perf_counter() - run_start) / 60:.1f} min")
 
 
 if __name__ == "__main__":

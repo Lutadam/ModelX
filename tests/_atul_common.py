@@ -8,12 +8,26 @@ from pathlib import Path
 # Put the project root (where config.py and main.py live) on the import path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import numpy as np
 import pandas as pd
 
-from alerts import alert_start_times, count_false_alerts, detect_failure
-from config import FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET, FAILURES, TEST_START
-from data import load_dataset
-from main import NON_FEATURE_COLUMNS, build_minute_table, judge_alarms
+from alerts import (
+    alert_start_times,
+    count_false_alerts,
+    detect_failure,
+    judge_alarms,
+    operating_hours_of_normal_minutes,
+)
+from config import (
+    ALERT_COOLDOWN,
+    FAILURES,
+    FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
+    REALERT_AFTER,
+    TEST_START,
+    THRESHOLD_CANDIDATES,
+    WARNING_HORIZON,
+)
+from minute_table import get_feature_names, load_minute_table
 from rules import LowPressureRule
 
 failed_checks = []
@@ -28,67 +42,79 @@ def check(condition: bool, message: str) -> None:
         failed_checks.append(message)
 
 
-def minutes_from(start: str, count: int) -> pd.DatetimeIndex:
-    return pd.date_range(start, periods=count, freq="1min")
-
-
 def print_header(title: str) -> None:
     print("==================================================")
     print(f" {title}")
     print("==================================================")
 
 
-def test_alerts() -> None:
-    print("\n[Alerts] Grouping alarms, false alerts, caught and warning hours (made-up data)...")
-    minutes = minutes_from("2020-01-01", 24 * 60)
+def reference_alert_starts(alarm: pd.Series) -> list:
+    """Alert starts worked out one alarm minute at a time (the slow, obvious way).
 
-    # Alarms at minutes 0-2 and again 4 hours later: one burst, then another
-    alarm = pd.Series(False, index=minutes)
-    alarm.iloc[[0, 1, 2, 240, 241]] = True
-    starts = alert_start_times(alarm)
-    check(len(starts) == 2, f"Two bursts of alarms 4 h apart give 2 alerts (got {len(starts)})")
-
-    close_together = pd.Series(False, index=minutes)
-    close_together.iloc[[0, 100]] = True
-    check(len(alert_start_times(close_together)) == 1, "Two alarms 100 min apart are one alert (inside the 3 h cooldown)")
-
-    # An alert starting inside a risk window is not a false alert
-    labels = pd.Series(0.0, index=minutes)
-    labels.iloc[238:] = 1.0
-    check(count_false_alerts(alarm, labels) == 1, "Only the alert on a normal minute counts as false (the one in the risk window does not)")
-
-    failure_start = minutes[600]
-    in_window = pd.Series(False, index=minutes)
-    in_window[failure_start - pd.Timedelta(hours=2)] = True
-    caught = detect_failure(in_window, failure_start)
-    check(caught["caught"] and abs(caught["warning_hours"] - 2.0) < 1e-9, "An alarm 2 h before the failure gives caught with 2.0 h of warning")
-    too_early = pd.Series(False, index=minutes)
-    too_early[failure_start - pd.Timedelta(hours=5)] = True
-    check(not detect_failure(too_early, failure_start)["caught"], "An alarm 5 h before the failure is outside the 3 h window, so not caught")
-    check(not detect_failure(pd.Series(False, index=minutes), failure_start)["caught"], "No alarm at all is not caught")
+    New alert after a quiet spell longer than ALERT_COOLDOWN, or when the alarm
+    is still on REALERT_AFTER after the current alert began.
+    """
+    starts, previous_alarm, current_alert_start = [], None, None
+    for time in alarm.index[alarm.to_numpy(dtype=bool)]:
+        quiet_too_long = previous_alarm is None or time - previous_alarm > ALERT_COOLDOWN
+        on_too_long = current_alert_start is not None and time >= current_alert_start + REALERT_AFTER
+        if quiet_too_long or on_too_long:
+            starts.append(time)
+            current_alert_start = time
+        previous_alarm = time
+    return starts
 
 
-def test_low_pressure_rule_budget() -> None:
-    print("\n[Low-pressure rule] Cut-off must respect the false-alert budget (made-up data)...")
-    minutes = minutes_from("2020-01-01", 20000)  # about 333 operating hours
-    pressure = pd.Series(9.0, index=minutes)
-    for dip_start in (1000, 5000, 9000, 13000, 17000):  # 5 dips, each far apart
-        pressure.iloc[dip_start:dip_start + 2] = 3.0
-    labels = pd.Series(0.0, index=minutes)
-    operating = pd.Series(1.0, index=minutes)
+def test_alerts(test: pd.DataFrame) -> None:
+    """Alert counting and caught / warning hours, on the real F4 test block."""
+    print("\n[Alerts] Grouping alarms, false alerts, caught and warning hours (real data, F4 test block)...")
+    real_alarms = {
+        "LPS active": test["lps_alarm"].astype(bool),
+        "motor running": test["operating"] == 1,
+    }
+    for alarm_name, alarm in real_alarms.items():
+        reference_starts = reference_alert_starts(alarm)
+        check(list(alert_start_times(alarm)) == reference_starts,
+              f"{alarm_name}: {len(reference_starts):,} alerts, same as the minute-by-minute count")
+        reference_false = sum(1 for time in reference_starts if test["label"][time] == 0)
+        check(count_false_alerts(alarm, test["label"]) == reference_false,
+              f"{alarm_name}: {reference_false} false alerts (alerts starting on a normal minute)")
 
-    rule = LowPressureRule(FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET).fit(pressure, labels, operating)
-    false_alerts = count_false_alerts(rule.predict(pressure), labels)
-    rate = false_alerts / (len(minutes) / 60)
+    failure_start = FAILURES[-1].start
+    window_start = failure_start - WARNING_HORIZON
+    motor_running = test["operating"] == 1
+    alarms_in_window = test.index[(test.index >= window_start) & (test.index < failure_start) & motor_running.to_numpy()]
+    detection = detect_failure(motor_running, failure_start)
+    check(detection["caught"] == (len(alarms_in_window) > 0),
+          f"'Motor running' has {len(alarms_in_window)} alarm minutes in the 3 h before F4, so caught = {detection['caught']}")
+    if detection["caught"]:
+        expected_hours = (failure_start - alarms_in_window[0]).total_seconds() / 3600
+        check(abs(detection["warning_hours"] - expected_hours) < 1e-9,
+              f"Warning measured from the first alarm in the window = {expected_hours:.2f} h")
+    before_window = motor_running & (test.index < window_start)
+    check(not detect_failure(before_window, failure_start)["caught"],
+          "Alarms only before the 3 h window are not a catch")
+    check(not detect_failure(motor_running & False, failure_start)["caught"], "No alarm at all is not caught")
+
+
+def test_low_pressure_rule_budget(train: pd.DataFrame) -> None:
+    """The cut-off is the most sensitive one that keeps the real training minutes within the budget."""
+    print("\n[Low-pressure rule] Cut-off must respect the false-alert budget (real training data, F1-F3)...")
+    rule = LowPressureRule(FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET).fit(
+        train["lowest_pressure"], train["label"], train["operating"])
+    normal_hours = operating_hours_of_normal_minutes(train["label"], train["operating"])
+    rate = count_false_alerts(rule.predict(train["lowest_pressure"]), train["label"]) / normal_hours
     check(rate <= FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
-          f"5 dips would be 1.5 per 100 h, so the rule backs off: {100 * rate:.2f} per 100 h (budget 1.00)")
-    check(rule.pressure_cutoff == 3.0, f"Cut-off stays at the lowest pressure seen, 3.0 (got {rule.pressure_cutoff})")
+          f"Cut-off {rule.pressure_cutoff:.3f} bar gives {100 * rate:.2f} false alerts per 100 operating hours (budget 1.00)")
 
-    few_dips = pressure.copy()
-    few_dips.iloc[13000:13002] = 9.0
-    few_dips.iloc[17000:17002] = 9.0  # only 3 dips left: 0.9 per 100 h, inside the budget
-    relaxed_rule = LowPressureRule(FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET).fit(few_dips, labels, operating)
-    check(relaxed_rule.pressure_cutoff > 3.0, f"With only 3 dips the budget allows a higher cut-off (got {relaxed_rule.pressure_cutoff})")
+    normal_pressure = train.loc[train["label"] == 0, "lowest_pressure"]
+    candidates = np.unique(normal_pressure.quantile(np.linspace(0, 0.5, THRESHOLD_CANDIDATES)))
+    check(rule.pressure_cutoff in candidates, "The cut-off is one of the candidates from normal minutes only")
+    higher = candidates[candidates > rule.pressure_cutoff]
+    if len(higher):
+        higher_rate = count_false_alerts(train["lowest_pressure"] < higher[0], train["label"]) / normal_hours
+        check(higher_rate > FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
+              f"The next, more sensitive cut-off ({higher[0]:.3f} bar) would break the budget")
 
 
 def load_train_test() -> tuple:
@@ -98,7 +124,7 @@ def load_train_test() -> tuple:
         Tuple of (train, test, feature_names).
     """
     print("\n[Real data] Train/test split and leakage checks...")
-    minute_table = build_minute_table(load_dataset())
+    minute_table = load_minute_table()
     train = minute_table[minute_table.index < TEST_START]
     test = minute_table[minute_table.index >= TEST_START]
     check(train.index.max() < TEST_START <= test.index.min(), f"All training minutes are before {TEST_START}, all test minutes after")
@@ -108,8 +134,7 @@ def load_train_test() -> tuple:
           f"{held_out.name} appears only in the test set")
     print(f"  train: {len(train)} minutes, {int(train['label'].sum())} risk | test: {len(test)} minutes, {int(test['label'].sum())} risk")
     check(int(train["label"].sum()) > 0 and int(test["label"].sum()) > 0, "Both sets contain risk minutes")
-    feature_names = [c for c in minute_table.columns if c not in NON_FEATURE_COLUMNS]
-    return train, test, feature_names
+    return train, test, get_feature_names(minute_table)
 
 
 def print_result(model_name: str, model_alarm: pd.Series, train: pd.DataFrame, test: pd.DataFrame) -> None:

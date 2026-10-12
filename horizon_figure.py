@@ -24,8 +24,10 @@ number is the evidence for or against N = 3 h:
   * departures inside -3 h       -> N fits;
   * no departure                 -> nothing in this signal warns of that failure.
 
-Standalone: needs only the MetroPT-3 CSV.
-    python horizon_figure_Hishaam.py "path/to/MetroPT3(AirCompressor).csv"
+Standalone, not part of main.py. Needs only the MetroPT-3 CSV (config.DATA_FILE):
+    python horizon_figure.py
+or with another CSV path:
+    python horizon_figure.py "path/to/MetroPT3(AirCompressor).csv"
 Writes figures/horizon_four_panel.png and results/horizon_departures.csv.
 """
 import sys
@@ -38,25 +40,29 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+import config
+
 # ------------------------------------------------------------------ settings
-WARNING_HORIZON_HOURS = 3          # N, fixed by the team (condition 3)
-HOURS_BEFORE = 48                  # how far back each panel looks
-HOURS_AFTER = 2                    # a little past the failure start
-OPERATING_MOTOR_CURRENT_AMPS = 1.0 # same rule as the team's config.py
-ROLLING = "60min"
+WARNING_HORIZON_HOURS = config.WARNING_HORIZON / pd.Timedelta(hours=1)  # N, fixed by the team (condition 3)
+HOURS_BEFORE = config.FIGURE_HOURS_BEFORE_FAILURE   # how far back each panel looks
+HOURS_AFTER = config.FIGURE_HOURS_AFTER_FAILURE     # a little past the failure start
+OPERATING_MOTOR_CURRENT_AMPS = config.OPERATING_MOTOR_CURRENT_AMPS
+MOTOR_CURRENT = config.MOTOR_CURRENT_COLUMN
+MINUTE = config.FEATURE_STEP
+ROLLING = config.ROLLING_WINDOW
+
+# Settings used only by this figure
 BASELINE_DAYS = (7, 2)             # normal range = from 7 days to 2 days before the failure
 BASELINE_QUANTILES = (0.005, 0.995)  # outside the middle 99% of the baseline = "departed"
 SUSTAINED_MINUTES = 30             # must stay outside for this long to count
+MIN_BASELINE_MINUTES = 600         # fewer baseline minutes than this: no normal range, no departure
+FROZEN_MINUTES = 10                # pressure constant and motor off this long in a row = frozen logger
+MIN_ROLLING_MINUTES = 40           # minutes with data a 60-min pressure mean needs
 
-# Same as config.FAILURES (UCI table, renumbered). F1's start is a midnight
-# placeholder: the whole day was logged, so its true onset is unknown.
-FAILURES = [
-    ("F1", pd.Timestamp("2020-04-18 00:00")),
-    ("F2", pd.Timestamp("2020-05-29 23:30")),
-    ("F3", pd.Timestamp("2020-06-05 10:00")),
-    ("F4", pd.Timestamp("2020-07-15 14:30")),
-]
-UNKNOWN_ONSET = {"F1"}
+# Failures come from config.FAILURES. F1's start is a midnight placeholder:
+# the whole day was logged, so its true onset is unknown.
+FAILURES = [(failure.name, failure.start) for failure in config.FAILURES]
+UNKNOWN_ONSET = config.UNKNOWN_ONSET_FAILURES
 
 # Reference palette (dataviz skill), light mode
 SERIES = "#2a78d6"
@@ -74,21 +80,22 @@ def load_minutes(csv_path: Path) -> pd.DataFrame:
 
     Only the three needed columns are read, to keep memory low on a laptop.
     """
-    readings = pd.read_csv(csv_path, usecols=["timestamp", "TP3", "Motor_current"],
+    readings = pd.read_csv(csv_path, usecols=["timestamp", "TP3", MOTOR_CURRENT],
                            parse_dates=["timestamp"]).sort_values("timestamp").set_index("timestamp")
-    motor_on = (readings["Motor_current"] > OPERATING_MOTOR_CURRENT_AMPS).astype(float)
+    motor_on = (readings[MOTOR_CURRENT] > OPERATING_MOTOR_CURRENT_AMPS).astype(float)
     per_minute = pd.DataFrame({
-        "motor_on": motor_on.resample("1min").mean(),
-        "tp3": readings["TP3"].resample("1min").mean(),
-        "tp3_range": readings["TP3"].resample("1min").agg(lambda x: x.max() - x.min() if len(x) else np.nan),
+        "motor_on": motor_on.resample(MINUTE).mean(),
+        "tp3": readings["TP3"].resample(MINUTE).mean(),
+        "tp3_range": readings["TP3"].resample(MINUTE).agg(lambda x: x.max() - x.min() if len(x) else np.nan),
     })
     has_data = per_minute["motor_on"].notna()
 
-    # Frozen: pressure exactly constant and motor off, for 10+ minutes in a row.
+    # Frozen: pressure exactly constant and motor off, for FROZEN_MINUTES or more in a row.
     still = has_data & (per_minute["tp3_range"] == 0) & (per_minute["motor_on"] == 0)
-    still_rolling = still.astype(int).rolling(10, min_periods=10).sum()
-    frozen = still_rolling.reindex(per_minute.index).fillna(0) >= 10
-    frozen = frozen | frozen.shift(-9, fill_value=False).rolling(10, min_periods=1).max().astype(bool)
+    still_rolling = still.astype(int).rolling(FROZEN_MINUTES, min_periods=FROZEN_MINUTES).sum()
+    frozen = still_rolling.reindex(per_minute.index).fillna(0) >= FROZEN_MINUTES
+    frozen = frozen | frozen.shift(-(FROZEN_MINUTES - 1), fill_value=False).rolling(
+        FROZEN_MINUTES, min_periods=1).max().astype(bool)
     frozen &= still
 
     # Continuous run: minutes since the motor was last off. A minute counts as
@@ -99,7 +106,7 @@ def load_minutes(csv_path: Path) -> pd.DataFrame:
 
     out = pd.DataFrame({
         "run_hours": (run_minutes / 60).where(has_data),
-        "tp3_bar": per_minute["tp3"].rolling(ROLLING, min_periods=40).mean(),
+        "tp3_bar": per_minute["tp3"].rolling(ROLLING, min_periods=MIN_ROLLING_MINUTES).mean(),
         "frozen": frozen,
     })
     out.loc[out["frozen"], "tp3_bar"] = np.nan  # stale values are not a measurement
@@ -138,7 +145,7 @@ def departure_hours(signal: pd.Series, failure_start: pd.Timestamp) -> float:
     """
     baseline = signal[(signal.index >= failure_start - pd.Timedelta(days=BASELINE_DAYS[0]))
                       & (signal.index < failure_start - pd.Timedelta(days=BASELINE_DAYS[1]))].dropna()
-    if len(baseline) < 600:
+    if len(baseline) < MIN_BASELINE_MINUTES:
         return float("nan")
     low, high = baseline.quantile(BASELINE_QUANTILES)
     recent = signal[(signal.index >= failure_start - pd.Timedelta(hours=HOURS_BEFORE))
@@ -214,7 +221,7 @@ def draw(minutes: pd.DataFrame, out_png: Path) -> pd.DataFrame:
         axes[1, column].set_xlim(-HOURS_BEFORE, HOURS_AFTER)
         axes[1, column].set_xticks([-48, -36, -24, -12, -3, 0])
         departures.append(record)
-    figure.suptitle(f"The 48 hours before each failure. Orange: the {WARNING_HORIZON_HOURS}-hour risk window (N). "
+    figure.suptitle(f"The 48 hours before each failure. Orange: the {WARNING_HORIZON_HOURS:g}-hour risk window (N). "
                     "Grey: frozen readings (train off). Breaks: no data.",
                     fontsize=11, color=TEXT, x=0.01, ha="left")
     figure.tight_layout()
@@ -231,28 +238,27 @@ def operating_hours_per_day(csv_path: Path) -> float:
     assuming 14 operating hours a day. This is the real figure under the
     code's definition (motor current above 1 A).
     """
-    readings = pd.read_csv(csv_path, usecols=["timestamp", "Motor_current"], parse_dates=["timestamp"])
-    on_minutes = (readings.set_index("timestamp")["Motor_current"] > OPERATING_MOTOR_CURRENT_AMPS
-                  ).astype(float).resample("1min").mean().dropna()
+    readings = pd.read_csv(csv_path, usecols=["timestamp", MOTOR_CURRENT], parse_dates=["timestamp"])
+    on_minutes = (readings.set_index("timestamp")[MOTOR_CURRENT] > OPERATING_MOTOR_CURRENT_AMPS
+                  ).astype(float).resample(MINUTE).mean().dropna()
     days = on_minutes.index.normalize().nunique()
     return float(on_minutes.sum() / 60 / days)
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit('Usage: python horizon_figure_Hishaam.py "path/to/MetroPT3(AirCompressor).csv"')
-    csv_path = Path(sys.argv[1])
+def make_horizon_report(csv_path: Path = config.DATA_FILE) -> pd.DataFrame:
+    """Draw the four-panel figure, save the departures table and print what it says."""
     minutes = load_minutes(csv_path)
-    departures = draw(minutes, Path("figures") / "horizon_four_panel.png")
-    Path("results").mkdir(exist_ok=True)
-    departures.to_csv(Path("results") / "horizon_departures.csv", index=False)
+    departures = draw(minutes, config.FIGURES_DIR / "horizon_four_panel.png")
+    config.RESULTS_DIR.mkdir(exist_ok=True)
+    departures.to_csv(config.RESULTS_DIR / "horizon_departures.csv", index=False)
     print("What each signal did before each failure:")
     print(departures.to_string(index=False))
     hours_a_day = operating_hours_per_day(csv_path)
     print(f"\nCompressor motor on: {hours_a_day:.1f} h per day on average "
           f"-> 1 false alert per 100 operating hours = 1 per {100 / hours_a_day:.1f} days")
-    print("Written: figures/horizon_four_panel.png, results/horizon_departures.csv")
+    print(f"Written: {config.FIGURES_DIR / 'horizon_four_panel.png'}, {config.RESULTS_DIR / 'horizon_departures.csv'}")
+    return departures
 
 
 if __name__ == "__main__":
-    main()
+    make_horizon_report(Path(sys.argv[1]) if len(sys.argv) > 1 else config.DATA_FILE)

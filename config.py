@@ -77,6 +77,14 @@ FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET = 1 / 100
 # Assumption: reuse the warning horizon, since a warning is acted on within it.
 ALERT_COOLDOWN = WARNING_HORIZON
 
+# An alarm still on this long after its alert began counts as a NEW alert (the
+# depot would inspect again the next day). Used by evaluation.py only.
+REALERT_AFTER = pd.Timedelta(hours=24)
+
+# Every budget search (rules, Isolation Forest, evaluation) tries this many
+# candidate thresholds, spread evenly over the score quantiles.
+THRESHOLD_CANDIDATES = 501
+
 # PLACEHOLDER: Shazia owns the operating-hour definition (condition 4). A
 # minute counts as operating when the mean motor current is above this.
 MOTOR_CURRENT_COLUMN = "Motor_current"
@@ -84,4 +92,36 @@ OPERATING_MOTOR_CURRENT_AMPS = 1.0
 
 ISOLATION_FOREST_TREES = 200
 RANDOM_FOREST_TREES = 200
-RANDOM_FOREST_ALARM_PROBABILITY = 0.5
+
+# ---------------------------------------------------------------- evaluation
+RESULTS_DIR = Path("results")
+CACHE_DIR = Path("cache")  # saved per-minute table (minute_table.load_minute_table); safe to delete
+F_BETA = 2.0                          # F-score weighting: a missed failure costs more than a false alarm
+UNKNOWN_ONSET_FAILURES = {"F1"}       # start time is a placeholder, so hours of warning are not reported
+TIME_ORDERED_FAILURE = FAILURES[-1].name  # the only fold that trains on earlier failures only
+
+# Timeline figures (evaluation.py and horizon_figure.py) show this stretch around each failure.
+FIGURE_HOURS_BEFORE_FAILURE = 48
+FIGURE_HOURS_AFTER_FAILURE = 2
+# Training rows this close to a test block are dropped, so no training row
+# overlaps a test row. Must be at least the CNN+GRU sequence plus ROLLING_WINDOW.
+PURGE_GAP = pd.Timedelta(hours=24)
+
+# ---------------------------------------------------------------- deep learning (CNN + GRU)
+# True: stop with an error when PyTorch finds no GPU. False: fall back to the CPU (slow).
+REQUIRE_GPU = True
+# cuDNN is NVIDIA's fast library for the GRU. Off because, with the RTX 3060's
+# driver 555 (CUDA 12.5) and this PyTorch (CUDA 12.6, cuDNN 9.10), training a GRU
+# with cuDNN makes Python crash on exit. Off = PyTorch's own GPU code: slower,
+# same model. Turn it back on after a driver update to CUDA 12.6 or newer.
+DEEP_LEARNING_USE_CUDNN = False
+DEEP_LEARNING_SEQUENCE_MINUTES = 120    # minutes of history the network sees per prediction
+DEEP_LEARNING_EPOCHS = 3
+DEEP_LEARNING_BATCH_SIZE = 256
+DEEP_LEARNING_LEARNING_RATE = 1e-3
+DEEP_LEARNING_RISK_WEIGHT = 15.0        # a risk window counts this many times more than a normal one in the loss
+DEEP_LEARNING_MAX_NORMAL_WINDOWS = 60_000  # normal training windows kept per training run (all risk windows are kept)
+DEEP_LEARNING_CNN_CHANNELS = 32
+DEEP_LEARNING_GRU_HIDDEN_SIZE = 64
+DEEP_LEARNING_GRU_LAYERS = 2
+DEEP_LEARNING_DROPOUT = 0.2

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from alerts import count_false_alerts, operating_hours_of_normal_minutes
-from config import FEATURE_STEP, LPS_COLUMN, PRESSURE_COLUMNS
+from config import FEATURE_STEP, LPS_COLUMN, PRESSURE_COLUMNS, THRESHOLD_CANDIDATES
 
 
 def lps_alarm_per_minute(readings: pd.DataFrame) -> pd.Series:
@@ -77,7 +77,7 @@ class LowPressureRule:
             raise ValueError("No operating hours in the normal training minutes.")
 
         normal_pressure = lowest_pressure_training[is_normal]
-        candidate_cutoffs = np.unique(normal_pressure.quantile(np.linspace(0, 0.5, 501)))
+        candidate_cutoffs = np.unique(normal_pressure.quantile(np.linspace(0, 0.5, THRESHOLD_CANDIDATES)))
         # The lowest candidate equals the minimum pressure, so nothing is below it: no alarms.
         self.pressure_cutoff = candidate_cutoffs[0]
         for candidate_cutoff in candidate_cutoffs[1:]:
