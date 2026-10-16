@@ -32,7 +32,7 @@ def predict_random_forest_alarms(forest: RandomForestClassifier, features: pd.Da
         forest: A fitted classifier from `train_random_forest`.
         features: Feature rows with no NaN.
         threshold: From the false-alarm budget on out-of-sample training scores
-            (`evaluation.threshold_for_budget` on `evaluation.cross_fitted_scores`).
+            (`evaluation.core.threshold_for_budget` on `evaluation.core.cross_fitted_scores`).
 
     Returns:
         Boolean alarm series aligned to the features.

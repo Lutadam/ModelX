@@ -6,7 +6,7 @@ compared with the Random Forest on the same rows.
 import numpy as np
 import pandas as pd
 
-from alerts import count_false_alerts, operating_hours_of_normal_minutes
+from evaluation.alerts import count_false_alerts, operating_hours_of_normal_minutes
 from config import FEATURE_STEP, LPS_COLUMN, PRESSURE_COLUMNS, THRESHOLD_CANDIDATES
 
 

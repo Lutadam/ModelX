@@ -1,6 +1,7 @@
 """Models for RailGuard AI.
 
 One module per model, so each owner works in their own file:
+    rules.py                  LPS rule and low-pressure rule (Atul)
     random_forest.py          supervised baseline (Atul)
     isolation_forest.py       unsupervised baseline (Atul)
     deep_learning_model.py    CNN+GRU training and scoring (Hitesh)

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import pandas as pd
 
-from alerts import (
+from evaluation.alerts import (
     alert_start_times,
     count_false_alerts,
     detect_failure,
@@ -27,8 +27,8 @@ from config import (
     THRESHOLD_CANDIDATES,
     WARNING_HORIZON,
 )
-from minute_table import get_feature_names, load_minute_table
-from rules import LowPressureRule
+from data.minute_table import get_feature_names, load_minute_table
+from models.rules import LowPressureRule
 
 failed_checks = []
 

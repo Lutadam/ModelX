@@ -12,7 +12,10 @@ from config import (
     DATA_FILE,
     FAILURES,
     FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
+    FEATURE_STEP,
     GAP_THRESHOLD,
+    MOTOR_CURRENT_COLUMN,
+    OPERATING_MOTOR_CURRENT_AMPS,
     WARNING_HORIZON,
 )
 
@@ -31,7 +34,10 @@ def load_dataset(csv_path: Path = DATA_FILE) -> pd.DataFrame:
         raise FileNotFoundError(f"Dataset file not found at: {csv_path}")
 
     # 1. Load CSV and parse timestamps
-    readings = pd.read_csv(csv_path, parse_dates=["timestamp"])
+    try:
+        readings = pd.read_csv(csv_path, parse_dates=["timestamp"])
+    except ValueError as error:  # e.g. no "timestamp" column: the wrong file
+        raise ValueError(f"{csv_path} does not look like the MetroPT-3 CSV: {error}") from error
 
     # 2. Drop unnamed index columns if present
     readings = readings.drop(columns=[c for c in readings.columns if c.startswith("Unnamed")])
@@ -47,6 +53,24 @@ def load_dataset(csv_path: Path = DATA_FILE) -> pd.DataFrame:
     readings["segment"] = is_new_segment.cumsum()
 
     return readings
+
+
+def operating_per_minute(readings: pd.DataFrame) -> pd.Series:
+    """Flag the minutes in which the compressor motor is running.
+
+    The project's one definition of an operating minute, used for the budget and
+    by the evaluation.
+
+    Args:
+        readings: Data with a DatetimeIndex and a motor current column.
+
+    Returns:
+        Float series per minute: 1.0 when the mean motor current is above
+        OPERATING_MOTOR_CURRENT_AMPS, 0.0 otherwise. Minutes with no readings
+        are left out.
+    """
+    mean_motor_current = readings[MOTOR_CURRENT_COLUMN].resample(FEATURE_STEP).mean().dropna()
+    return (mean_motor_current > OPERATING_MOTOR_CURRENT_AMPS).astype(float)
 
 
 def make_labels(timestamps: pd.DatetimeIndex) -> pd.Series:
@@ -86,9 +110,9 @@ def operating_hours_and_budget(operating_per_minute: pd.Series) -> dict:
 
     One definition of an operating hour for the whole project: a minute counts
     as operating when its mean motor current is above OPERATING_MOTOR_CURRENT_AMPS
-    (alerts.operating_per_minute, the same flag the evaluation uses).
+    (operating_per_minute above, the same flag the evaluation uses).
     The budget is 1 false alert per 100 operating hours. The motor is on about
-    9 h per day on average (horizon_figure.py), so that is about 1 false alert
+    9 h per day on average (evaluation/horizon_figure.py), so that is about 1 false alert
     per 11 days.
 
     Args:
@@ -118,8 +142,6 @@ def calculate_operating_hours_and_budget(readings: pd.DataFrame, verbose: bool =
     Returns:
         The dict of `operating_hours_and_budget`, plus total_rows.
     """
-    from alerts import operating_per_minute  # imported here: alerts imports the evaluation module
-
     stats = {"total_rows": len(readings), **operating_hours_and_budget(operating_per_minute(readings))}
     if verbose:
         print("==================================================")

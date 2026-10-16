@@ -5,7 +5,7 @@ Methods:
   * Low pressure rule: its cut-off is set from the false-alarm budget on the training minutes.
   * Random Forest, Isolation Forest, CNN+GRU: each gives a risk score per minute.
     The alarm threshold is the most sensitive one that keeps false alerts within
-    the budget on out-of-sample training scores (`evaluation.cross_fitted_scores`),
+    the budget on out-of-sample training scores (`evaluation.core.cross_fitted_scores`),
     never on the test block.
 
 A scored method is a function `fit_and_score(fit_rows, score_rows)` that trains
@@ -14,8 +14,8 @@ a FRESH model on `fit_rows` and returns one score per row of `score_rows`.
 import pandas as pd
 
 import config
-from console import run_with_progress
-from evaluation import (
+from evaluation.console import run_with_progress
+from evaluation.core import (
     EvalConfig,
     cross_fitted_scores,
     evaluate_fold,
@@ -26,7 +26,7 @@ from evaluation import (
 )
 from models import IsolationForestDetector, train_random_forest
 from models.deep_learning_model import make_fit_and_score as make_deep_learning_fit_and_score
-from rules import LowPressureRule
+from models.rules import LowPressureRule
 
 LPS_METHOD = "LPS active (current practice)"
 LOW_PRESSURE_METHOD = "Low pressure (TP3/Reservoirs)"
@@ -74,24 +74,39 @@ def build_scored_methods(feature_names: list, settings: EvalConfig, device) -> d
 # ============================================================ judging one method on one fold
 
 def judge_method(method_name: str, fold, test: pd.DataFrame, alarm: pd.Series, settings: EvalConfig,
-                 scores: pd.Series = None, threshold: float = None) -> dict:
-    """Judge one method on one fold and save its timeline figure. Returns one results row."""
+                 traces: list, scores: pd.Series = None, threshold: float = None, **display) -> dict:
+    """Judge one method on one fold and save its timeline figure. Returns one results row.
+
+    Also appends what the summary figures need (alarm, scores, threshold) to `traces`.
+    `display` goes to plot_fold (score_label, score_sign).
+    """
     result = evaluate_fold(method_name, fold, test, alarm, settings, scores, threshold)
-    plot_fold(method_name, fold, test, alarm, settings, scores, threshold, folder=config.FIGURES_DIR)
+    try:
+        plot_fold(method_name, fold, test, alarm, settings, scores, threshold, folder=config.FIGURES_TIMELINES_DIR,
+                  **display)
+    except Exception as error:  # a figure problem must not stop a long run; the result row is unaffected
+        print(f"\n    WARNING: timeline figure for {method_name}, {fold.name} not drawn "
+              f"({type(error).__name__}: {error})")
+    traces.append({"method": method_name, "fold": fold, "alarm": alarm, "scores": scores,
+                   "threshold": threshold, "score_sign": display.get("score_sign", 1.0),
+                   "score_label": display.get("score_label", "risk score")})
     return result
 
 
-def judge_low_pressure_rule(fold, train: pd.DataFrame, test: pd.DataFrame, settings: EvalConfig) -> dict:
+def judge_low_pressure_rule(fold, train: pd.DataFrame, test: pd.DataFrame, settings: EvalConfig,
+                            traces: list) -> dict:
     rule = LowPressureRule(settings.budget_per_operating_hour).fit(
         train["lowest_pressure"], train["label"], train["operating"])
     alarm = rule.predict(test["lowest_pressure"])
     # A lower pressure means more risk, so the score is the pressure with its sign flipped.
-    return judge_method(LOW_PRESSURE_METHOD, fold, test, alarm, settings,
-                        -test["lowest_pressure"], -rule.pressure_cutoff)
+    # The figures flip it back and show the pressure in bar.
+    return judge_method(LOW_PRESSURE_METHOD, fold, test, alarm, settings, traces,
+                        -test["lowest_pressure"], -rule.pressure_cutoff,
+                        score_label="lowest pressure (bar)", score_sign=-1.0)
 
 
 def judge_scored_method(method_name: str, fit_and_score, fold, folds: list, train: pd.DataFrame,
-                        test: pd.DataFrame, settings: EvalConfig) -> dict:
+                        test: pd.DataFrame, settings: EvalConfig, traces: list) -> dict:
     out_of_sample_scores = cross_fitted_scores(train, folds, settings, fit_and_score)
     has_score = out_of_sample_scores.notna()
     threshold = threshold_for_budget(
@@ -99,7 +114,7 @@ def judge_scored_method(method_name: str, fit_and_score, fold, folds: list, trai
 
     # Minutes without a full window (CNN+GRU only) have no evidence of risk: score 0, never an alarm.
     test_scores = pd.Series(fit_and_score(train, test), index=test.index).fillna(0.0)
-    return judge_method(method_name, fold, test, test_scores >= threshold, settings, test_scores, threshold)
+    return judge_method(method_name, fold, test, test_scores >= threshold, settings, traces, test_scores, threshold)
 
 
 # ============================================================ all folds
@@ -115,20 +130,21 @@ def run_all_folds(minute_table: pd.DataFrame, folds: list, scored_methods: dict,
         settings: Evaluation settings.
 
     Returns:
-        (per_fold, summary): one row per method and fold, and one row per method.
+        (per_fold, summary, traces): one row per method and fold, one row per method, and
+        per method and fold the alarm, scores and threshold (for report_figures.py).
     """
-    result_rows = []
+    result_rows, traces = [], []
     for fold_number, fold in enumerate(folds, start=1):
         print(f"\n  Fold {fold_number}/{len(folds)}: {fold.name}", flush=True)
         train, test = split(minute_table, fold, settings)
 
         result_rows.append(run_with_progress(LPS_METHOD, lambda: judge_method(
-            LPS_METHOD, fold, test, test["lps_alarm"].astype(bool), settings)))
+            LPS_METHOD, fold, test, test["lps_alarm"].astype(bool), settings, traces)))
         result_rows.append(run_with_progress(LOW_PRESSURE_METHOD, lambda: judge_low_pressure_rule(
-            fold, train, test, settings)))
+            fold, train, test, settings, traces)))
         for method_name, fit_and_score in scored_methods.items():
             result_rows.append(run_with_progress(method_name, lambda: judge_scored_method(
-                method_name, fit_and_score, fold, folds, train, test, settings)))
+                method_name, fit_and_score, fold, folds, train, test, settings, traces)))
 
     per_fold = pd.DataFrame(result_rows)
-    return per_fold, summarise(per_fold)
+    return per_fold, summarise(per_fold), traces

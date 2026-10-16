@@ -31,29 +31,59 @@ Check with `python -c "import torch; print(torch.cuda.is_available())"`.
 
 1. Checks the GPU.
 2. Loads the per-minute table of the real MetroPT-3 data (labels, rule inputs, features), from the cache when possible.
-3. Works out the operating hours and the false-alarm budget.
-4. Makes four leave-one-failure-out folds and checks the purge gap.
-5. Judges every method the same way on every fold: LPS rule, low-pressure rule, Random Forest, Isolation Forest, CNN+GRU. Writes `results/per_fold.csv`, `results/summary.csv`, `results/results.json` and `figures/timeline_<method>_<failure>.png`. Numbers in the report are copied from `results/`, never retyped from the console.
+3. Data checks: the horizon figure (sensors in the 48 h before each failure) and the gap analysis (where the gaps sit, and whether they predict the label). A problem here only warns; no method depends on them.
+4. Works out the operating hours and the false-alarm budget.
+5. Makes four leave-one-failure-out folds and checks the purge gap.
+6. Judges every method the same way on every fold: LPS rule, low-pressure rule, Random Forest, Isolation Forest, CNN+GRU. Writes `results/per_fold.csv`, `results/summary.csv` and `results/results.json` (which starts with the run date, device and settings). Numbers in the report are copied from `results/`, never retyped from the console.
+7. Draws the figures in `figures/`, one subfolder per question:
+
+| Figure | Shows |
+|---|---|
+| `data/horizon_four_panel.png` | Sensors in the 48 h before each failure (step 3) |
+| `data/gaps.png` | Every gap in the data on one timeline, with the four failures (step 3) |
+| `summary/comparison.png` | Every method side by side: failures caught, and false alerts per 100 operating hours (pooled and per fold) against the budget. Start here |
+| `summary/precision_recall.png` | Precision-recall curve per fold for each method with a score, against a random score |
+| `alerts/alerts_<failure>.png` | The whole test block, one row per method: when each alert happened (green = in the 3 h before the failure, red = false alert, grey = no data) |
+| `scores/scores_<method>.png` | The method's score on normal and on risk minutes, with the threshold: shows whether a miss means "the score never rose" or "it rose but stayed under the threshold" |
+| `timelines/<method>/timeline_<method>_<failure>.png` | The 48 h before one failure: score (or alarm), threshold, alerts. Gaps in the data are left blank |
 
 ## Layout
+
+```
+main.py          entry point: python main.py
+config.py        every shared setting
+data/            loading the data, features, the cached per-minute table
+models/          every method: the two rules, the two forests, the CNN+GRU
+evaluation/      how every method is judged, and the results, figures and terminal output
+tests/           one test file per team member, all on the real data
+results/, figures/, cache/   made by the runs (not committed, see .gitignore)
+```
+
+Run everything from the project root (where `main.py` is), so the folders import each other and `results/`, `figures/` and `cache/` land in the root.
 
 | File | Owner | Purpose |
 |---|---|---|
 | `main.py` | Atul | Entry point: wires every step below together |
 | `config.py` | Atul | Every setting shared by more than one file or that changes the results: paths, seed, failures, budget, alert rules, threshold search, purge gap, figure window, GPU and deep learning settings. Values used in one place only for display or speed (colours, figure sizes, scoring batch) stay in their own file |
-| `data.py` | Shazia | `load_dataset()`, `make_labels()`, operating hours and budget |
-| `features.py` | Shazia | `build_features()`: rolling, duty-cycle, frequency and motor-run features; PCA health index |
-| `minute_table.py` | Atul | `load_minute_table()` / `build_minute_table()`: labels, rule inputs and features on one per-minute table, cached |
-| `rules.py` | Atul | LPS rule and low-pressure rule |
-| `alerts.py` | Atul | Operating minutes, alarm minutes to alerts (same rule as `evaluation.py`), caught / warning hours, `judge_alarms` for one test block |
+| **`data/`** | | |
+| `data/dataset.py` | Shazia | `load_dataset()`, `make_labels()`, `operating_per_minute()` (moved here from `alerts`), operating hours and budget |
+| `data/features.py` | Shazia | `build_features()`: rolling, duty-cycle, frequency and motor-run features; PCA health index |
+| `data/minute_table.py` | Atul | `load_minute_table()` / `build_minute_table()`: labels, rule inputs and features on one per-minute table, cached |
+| **`models/`** | | |
+| `models/rules.py` | Atul | LPS rule and low-pressure rule |
 | `models/random_forest.py`, `models/isolation_forest.py` | Atul | The two baselines |
 | `models/deep_learning_model.py` | Hitesh | CNN+GRU training and scoring (`make_fit_and_score`) |
 | `models/cnn_gru_network.py`, `models/sequences.py`, `models/compute.py` | Hitesh | The network, the window cutting, GPU choice and seeds |
-| `folds.py` | Hitesh | Four folds and the purge-gap check (condition 2, refinement 3) |
-| `evaluation.py` | Hishaam | Folds, alerts, budget thresholds, metrics, summary, results files, timeline figures |
-| `run_folds.py` | Atul | Runs every method on every fold through `evaluation.py` |
-| `console.py` | Atul | Terminal output of `main.py` |
-| `horizon_figure.py` | Hishaam | Standalone, not part of `main.py`: `python horizon_figure.py`. Sensors in the 48 h before each failure, checks the 3 h horizon (refinement 1) |
+| **`evaluation/`** | | |
+| `evaluation/core.py` | Hishaam | Folds, alerts, budget thresholds, metrics, summary, results files, timeline figures |
+| `evaluation/folds.py` | Hitesh | Four folds and the purge-gap check (condition 2, refinement 3) |
+| `evaluation/alerts.py` | Atul | Alarm minutes to alerts (same rule as `evaluation/core.py`), caught / warning hours, `judge_alarms` for one test block |
+| `evaluation/run_folds.py` | Atul | Runs every method on every fold through `evaluation/core.py` |
+| `evaluation/report_figures.py` | | Summary figures: comparison, alerts per test block, precision-recall, score vs threshold |
+| `evaluation/plot_style.py` | | Colours and axis style shared by every figure |
+| `evaluation/console.py` | Atul | Terminal output of `main.py` |
+| `evaluation/gap_analysis.py` | | Standalone: `python -m evaluation.gap_analysis`. Where the gaps sit relative to the failures, and whether "the data just came back" predicts the label (lecturer feedback). Checks itself first and stops if a sanity check fails |
+| `evaluation/horizon_figure.py` | Hishaam | Standalone, not part of `main.py`: `python -m evaluation.horizon_figure`. Sensors in the 48 h before each failure, checks the 3 h horizon (refinement 1) |
 
 Tests, all on the real data. Where a check needs the right answer, it is worked out a second, simpler way (a plain loop) on the same real data and the two must agree:
 
@@ -73,7 +103,7 @@ On Windows, run with `PYTHONUTF8=1` if a test crashes on the tick characters.
 - `make_labels(timestamps) -> Series`: 1.0 risk, 0.0 normal, NaN excluded. Takes timestamps, not the readings table.
 - `load_minute_table() -> DataFrame`: `label`, `lps_alarm`, `lowest_pressure`, `operating`, then the features; no NaN. Cached version of `build_minute_table(load_dataset())`.
 - `operating_hours_and_budget(operating_per_minute) -> dict`: operating hours and the most false alerts the budget allows.
-- A **new scored model** provides `fit_and_score(fit_rows, score_rows) -> one risk score per row of score_rows` (higher = riskier). It trains a FRESH model on `fit_rows` each call. Add it to `build_scored_methods` in `run_folds.py`. The evaluation sets its threshold from the budget.
+- A **new scored model** provides `fit_and_score(fit_rows, score_rows) -> one risk score per row of score_rows` (higher = riskier). It trains a FRESH model on `fit_rows` each call. Add it to `build_scored_methods` in `evaluation/run_folds.py`. The evaluation sets its threshold from the budget.
 - `LowPressureRule(budget).fit(lowest_pressure, labels, operating).predict(lowest_pressure) -> bool Series`.
 - `IsolationForestDetector(budget).fit(...)` trains and sets its own cut-off; `.fit_forest(features, labels)` only trains (the four-fold run sets the cut-off from out-of-sample scores).
 - `predict_random_forest_alarms(forest, features, threshold) -> bool Series`: the threshold comes from the budget, never a fixed 0.5.
@@ -85,7 +115,7 @@ Risk is the 3 hours before a failure starts: `[start - 3h, start)`. Rows from th
 
 ## How results are judged
 
-- **Folds:** each of the four failures is held out in turn. Training rows within `PURGE_GAP` (24 h) of the test block are dropped. The gap must be at least the CNN+GRU window (120 min) plus the longest rolling feature (60 min); `folds.py` checks this.
+- **Folds:** each of the four failures is held out in turn. Training rows within `PURGE_GAP` (24 h) of the test block are dropped. The gap must be at least the CNN+GRU window (120 min) plus the longest rolling feature (60 min); `evaluation/folds.py` checks this.
 - **Operating hour:** one definition everywhere: a minute whose mean motor current is above `OPERATING_MOTOR_CURRENT_AMPS` (1.0 A, placeholder owned by Shazia). The motor is on about 9 h a day, so the budget is about 1 false alert per 11 days.
 - **Budget:** at most 1 false alert per train per 100 operating hours (`FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET`).
 - **Thresholds** are the most sensitive ones that stay within the budget on the normal training minutes only. Learned models use out-of-sample (cross-fitted) training scores, because a model scored on its own training data looks perfect and gets a threshold that is too low.
@@ -93,10 +123,33 @@ Risk is the 3 hours before a failure starts: `[start - 3h, start)`. Rows from th
 - **Caught:** at least one alarm inside the 3-hour risk window. Warning hours are measured from the first such alarm (not reported for F1, whose start time is a midnight placeholder).
 - **Reported per method:** failures caught out of 4 and out of the 3 with a known onset (F1 excluded), false alerts per 100 operating hours (pooled over the folds), PR-AUC and F2 per fold, the time-ordered F4 fold on its own, and the chance of catching that many failures by luck. Accuracy is not reported: always answering "normal" scores about 99.8%.
 
+## Results (run of 16 Oct 2026, from `results/`)
+
+**No method caught any of the four failures**, the current LPS practice included. With nothing caught, the methods can only be compared on false alerts.
+
+![Every method side by side](figures/summary/comparison.png)
+
+| Method | Caught | Caught, known onset | False alerts | Per 100 operating hours (pooled) | Per week | F4 (time-ordered) |
+|---|---|---|---|---|---|---|
+| LPS active (current practice) | 0 of 4 | 0 of 3 | 11 | 0.62 | 0.48 | missed, 5 false alerts |
+| Low pressure (TP3/Reservoirs) | 0 of 4 | 0 of 3 | 13 | 0.73 | 0.56 | missed, 0 false alerts |
+| Random Forest | 0 of 4 | 0 of 3 | 16 | 0.90 | 0.70 | missed, 15 false alerts |
+| Isolation Forest | 0 of 4 | 0 of 3 | 10 | 0.56 | 0.43 | missed, 0 false alerts |
+| CNN+GRU (deep learning) | 0 of 4 | 0 of 3 | 3 | 0.17 | 0.13 | missed, 2 false alerts |
+
+All five are within the budget (1 per 100 operating hours) when pooled, but several go over it in single folds, mostly F3, whose test block holds only about 6 days of normal running.
+
+What the figures show about the misses:
+
+- **CNN+GRU scores the hours before a failure lower than normal running.** Its score on risk minutes is close to 0 in every fold, while many normal minutes score about 0.9 (`figures/scores/scores_CNN_GRU.png`). Before F4 its highest score in the risk window is 0.0004, against a threshold of 0.93. Its low false-alert count comes from a score that rarely crosses the threshold, not from telling risk from normal.
+- **Isolation Forest comes closest, on F4 only.** Its score rises steadily over the 14 h before F4 and peaks at 0.705 in the risk window, just under the 0.721 threshold (`figures/timelines/Isolation_Forest/timeline_Isolation_Forest_F4.png`), and its F4 PR-AUC is 0.186 against a base rate of 0.002. This is the long compressor run seen in the horizon figure. It is not an independent test: `motor_run_minutes` was added after that figure showed F4's long run (see Limitations).
+- **The low-pressure rule never sees the failures coming.** The lowest pressure in every risk window stays around 8 bar, inside its normal range and well above the budget cut-off (`figures/scores/scores_Low_pressure.png`). Raising the cut-off far enough to reach them would flag most normal running too.
+- **PR-AUC is at the base rate for most methods and folds** (`figures/summary/precision_recall.png`), so minute by minute most scores are no better than random.
+
 ## Findings so far (from the data, before any tuning)
 
 - **F1 cannot be caught:** its start is a midnight placeholder and the compressor was off for the whole 3 hours before it. It is reported separately ("caught, known onset").
-- **Only F4 shows a warning sign** in the run length and TP3 pressure (`python horizon_figure.py`): the compressor ran 14.6 h without a stop before F4 (normal maximum 1.8 h), starting well before the 3 h window. F2 and F3 show nothing before the window in these two signals.
+- **Only F4 shows a warning sign** in the run length and TP3 pressure (`python -m evaluation.horizon_figure`): the compressor ran 14.6 h without a stop before F4 (normal maximum 1.8 h), starting well before the 3 h window. F2 and F3 show nothing before the window in these two signals.
 - **Low pressure happens in normal running.** There are 33 episodes below 3 bar. In every one both pressure sensors agree, and in 31 the LPS switch trips too, so they are real pressure losses, not sensor faults, and they stay in the data. They are why the low-pressure rule's budget cut-off drops to about 0.9 bar in the F4 fold.
 - **Thresholds that meet the budget on the training folds often go over it on the test folds.** This is a result to report, not something to tune away.
 
@@ -113,10 +166,10 @@ Risk is the 3 hours before a failure starts: `[start - 3h, start)`. Rows from th
 
 | Who | Done | Open |
 |---|---|---|
-| Shazia | `data.py`, `features.py`, labels, budget (one operating-hour definition), motor-run feature, PCA health index, her test | Operating threshold (1.0 A) is still a placeholder. The PCA health index is not used by any method: the sign of the first component is arbitrary, so it needs a decision on which direction means risk |
+| Shazia | `data/dataset.py`, `data/features.py`, labels, budget (one operating-hour definition), motor-run feature, PCA health index, her test | Operating threshold (1.0 A) is still a placeholder. The PCA health index is not used by any method: the sign of the first component is arbitrary, so it needs a decision on which direction means risk |
 | Atul | `config.py`, rules, alerts (now the same alert rule as the evaluation), Random Forest (budget threshold, no fixed 0.5), Isolation Forest, their tests | |
-| Hishaam | `evaluation.py` (now also counts catches with a known onset) and its tests, `horizon_figure.py` | |
-| Hitesh | CNN+GRU design and notebook | `folds.py` and `models/` were written from his notebook with Claude, not by Hitesh. He needs to review them, and to decide whether the model should be tuned (see Limitations) |
+| Hishaam | `evaluation/core.py` (now also counts catches with a known onset) and its tests, `evaluation/horizon_figure.py` | |
+| Hitesh | CNN+GRU design and notebook | `evaluation/folds.py` and `models/` were written from his notebook with Claude, not by Hitesh. He needs to review them, and to decide whether the model should be tuned (see Limitations) |
 | Whole team | | Commit `results/` and `figures/` once the numbers for the report are final. Both are in `.gitignore` (every run recreates them), so add them with `git add -f results/ figures/` |
 
-The proposal feedback text was not available when this table was written, so conditions are checked only against what the code says: condition 2 (folds) and refinement 3 (purge check) are implemented, condition 3 and refinement 1 (horizon) have `horizon_figure.py`, condition 4 (budget) is in the thresholds, refinement 2 (operating hours) rests on the 1.0 A placeholder.
+The proposal feedback text was not available when this table was written, so conditions are checked only against what the code says: condition 2 (folds) and refinement 3 (purge check) are implemented, condition 3 and refinement 1 (horizon) have `evaluation/horizon_figure.py`, condition 4 (budget) is in the thresholds, refinement 2 (operating hours) rests on the 1.0 A placeholder.

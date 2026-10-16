@@ -1,35 +1,14 @@
 """Turning per-minute alarms into alerts, and counting them against the budget.
 
 An alert is one burst of alarm minutes: it costs one inspection however long
-it lasts. The definition of an alert lives in ONE place, evaluation.alert_starts
+it lasts. The definition of an alert lives in ONE place, evaluation.core.alert_starts
 (cooldown, plus a new alert when an alarm stays on for REALERT_AFTER), so the
 thresholds set here are judged by the same rule in the evaluation.
 """
 import pandas as pd
 
-from config import (
-    FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET,
-    FEATURE_STEP,
-    MOTOR_CURRENT_COLUMN,
-    OPERATING_MOTOR_CURRENT_AMPS,
-    WARNING_HORIZON,
-)
-from evaluation import EvalConfig, alert_starts
-
-
-def operating_per_minute(readings: pd.DataFrame) -> pd.Series:
-    """Flag the minutes in which the compressor motor is running.
-
-    Args:
-        readings: Data with a DatetimeIndex and a motor current column.
-
-    Returns:
-        Float series per minute: 1.0 when the mean motor current is above
-        OPERATING_MOTOR_CURRENT_AMPS, 0.0 otherwise. Minutes with no readings
-        are left out.
-    """
-    mean_motor_current = readings[MOTOR_CURRENT_COLUMN].resample(FEATURE_STEP).mean().dropna()
-    return (mean_motor_current > OPERATING_MOTOR_CURRENT_AMPS).astype(float)
+from config import FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET, WARNING_HORIZON
+from evaluation.core import EvalConfig, alert_starts
 
 
 def alert_start_times(alarm: pd.Series) -> pd.DatetimeIndex:
@@ -66,7 +45,7 @@ def operating_hours_of_normal_minutes(labels: pd.Series, operating: pd.Series) -
 
     Args:
         labels: Labels from `make_labels`.
-        operating: Output of `operating_per_minute`, aligned to the labels.
+        operating: Output of `data.dataset.operating_per_minute`, aligned to the labels.
 
     Returns:
         Operating hours inside the normal minutes.

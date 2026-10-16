@@ -145,7 +145,7 @@ def compute_motor_run_minutes(readings: pd.DataFrame) -> pd.Series:
     A leak makes the compressor run on to hold the pressure, so an unusually
     long run can be a warning. A minute counts as running when its mean motor
     current is above OPERATING_MOTOR_CURRENT_AMPS (the project's one operating
-    definition, as in alerts.operating_per_minute). A stopped minute or a minute
+    definition, as in dataset.operating_per_minute). A stopped minute or a minute
     with no readings starts the count again. Looks back only, so no leakage.
 
     Added after horizon_figure.py showed F4 running 14.6 h without a stop
