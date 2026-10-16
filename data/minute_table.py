@@ -10,14 +10,14 @@ from pathlib import Path
 import pandas as pd
 
 import config
-from alerts import operating_per_minute
-from data import load_dataset, make_labels
-from features import build_features
-from rules import lowest_pressure_per_minute, lps_alarm_per_minute
+from data.dataset import load_dataset, make_labels, operating_per_minute
+from data.features import build_features
+from models.rules import lowest_pressure_per_minute, lps_alarm_per_minute
 
 NON_FEATURE_COLUMNS = ["label", "lps_alarm", "lowest_pressure", "operating"]
-TABLE_SOURCE_FILES = ["config.py", "data.py", "features.py", "rules.py", "alerts.py", "minute_table.py"]
-PROJECT_ROOT = Path(__file__).resolve().parent
+TABLE_SOURCE_FILES = ["config.py", "data/dataset.py", "data/features.py", "models/rules.py", "evaluation/alerts.py",
+                      "data/minute_table.py"]
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def build_minute_table(readings: pd.DataFrame) -> pd.DataFrame:
@@ -68,17 +68,24 @@ def load_minute_table(csv_path: Path = config.DATA_FILE, verbose: bool = False) 
     cache_dir = PROJECT_ROOT / config.CACHE_DIR
     cache_file = cache_dir / f"minute_table_{cache_key(csv_path)}.pkl"
     if cache_file.exists():
-        if verbose:
-            print(f"  Per-minute table loaded from the cache ({cache_file.name})")
-        return pd.read_pickle(cache_file)
+        try:
+            minute_table = pd.read_pickle(cache_file)
+            if verbose:
+                print(f"  Per-minute table loaded from the cache ({cache_file.name})")
+            return minute_table
+        except Exception as error:  # damaged file or saved by another pandas version: rebuilding is always safe
+            print(f"  WARNING: the cached table could not be read ({type(error).__name__}: {error}). Rebuilding it.")
 
     if verbose:
         print("  Building the per-minute table from the raw readings (cached for next time)...")
     minute_table = build_minute_table(load_dataset(csv_path))
-    cache_dir.mkdir(exist_ok=True)
-    for old_cache_file in cache_dir.glob("minute_table_*.pkl"):
-        old_cache_file.unlink()
-    minute_table.to_pickle(cache_file)
+    try:
+        cache_dir.mkdir(exist_ok=True)
+        for old_cache_file in cache_dir.glob("minute_table_*.pkl"):
+            old_cache_file.unlink()
+        minute_table.to_pickle(cache_file)
+    except OSError as error:  # the table is still correct, only the next run is slower
+        print(f"  WARNING: could not save the cache ({error}). The next run will rebuild the table.")
     return minute_table
 
 

@@ -6,7 +6,7 @@ Run from anywhere: python tests/test_isolation_forest.py
 Takes a minute or two because it loads the full dataset.
 """
 import _atul_common as common
-from alerts import count_false_alerts, operating_hours_of_normal_minutes
+from evaluation.alerts import count_false_alerts, operating_hours_of_normal_minutes
 from config import FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET
 from models import IsolationForestDetector
 

@@ -46,6 +46,7 @@ import pandas as pd
 from sklearn.metrics import average_precision_score, fbeta_score, precision_score, recall_score
 
 import config as project_config  # not "config": functions here take an EvalConfig named config
+from evaluation import plot_style as style
 
 MINUTES_PER_WEEK = 60 * 24 * 7
 
@@ -411,43 +412,88 @@ def summarise(per_fold: pd.DataFrame) -> pd.DataFrame:
 
 # ============================================================ outputs
 
-def save_results(per_fold: pd.DataFrame, summary: pd.DataFrame, folder: Path = project_config.RESULTS_DIR) -> None:
-    """Write the files the report is built from. Never retype numbers from the console."""
+def save_results(per_fold: pd.DataFrame, summary: pd.DataFrame, folder: Path = project_config.RESULTS_DIR,
+                 run_info: dict | None = None) -> None:
+    """Write the files the report is built from. Never retype numbers from the console.
+
+    run_info (when, which commit, which settings) goes at the top of results.json, so
+    committed numbers can always be traced back to the code that made them.
+    """
     folder.mkdir(parents=True, exist_ok=True)
     per_fold.to_csv(folder / "per_fold.csv", index=False)
     summary.to_csv(folder / "summary.csv")
     with open(folder / "results.json", "w") as handle:
-        json.dump({"per_fold": per_fold.to_dict(orient="records"),
+        json.dump({"run": run_info or {},
+                   "per_fold": per_fold.to_dict(orient="records"),
                    "summary": summary.to_dict(orient="index")}, handle, indent=2, default=str)
+
+
+def file_safe(method: str) -> str:
+    """Method name as used in figure file names, e.g. 'CNN+GRU (deep learning)' -> 'CNN_GRU'."""
+    return "".join(c if c.isalnum() else "_" for c in method.split(" (")[0])
 
 
 def plot_fold(method: str, fold: Fold, test: pd.DataFrame, alarm: pd.Series, config: EvalConfig,
               scores: pd.Series | None = None, threshold: float | None = None,
-              folder: Path = project_config.FIGURES_DIR) -> Path:
-    """The hours around the failure (config.FIGURE_HOURS_*): score, threshold, alarms. Raw material for error analysis
-    (did the score never rise, or rise but stay under the threshold?)."""
+              folder: Path = project_config.FIGURES_TIMELINES_DIR, score_label: str = "risk score",
+              score_sign: float = 1.0) -> Path:
+    """The hours around the failure (config.FIGURE_HOURS_*): score, threshold, alerts. Raw material for error analysis
+    (did the score never rise, or rise but stay under the threshold?).
+
+    score_label / score_sign: how to show the score. The low-pressure rule's score is the pressure with its sign
+    flipped, so it is shown as pressure in bar (score_sign -1). Methods without a score show their alarm (off/on).
+    Gaps in the data are left blank, never joined by a straight line.
+    """
     failure = fold.held_out
-    shown = ((test.index >= failure.start - pd.Timedelta(hours=project_config.FIGURE_HOURS_BEFORE_FAILURE))
-             & (test.index < failure.start + pd.Timedelta(hours=project_config.FIGURE_HOURS_AFTER_FAILURE)))
-    window = test.index[shown]
-    figure, axis = plt.subplots(figsize=(10, 3.2))
-    axis.axvspan(failure.start - config.warning_horizon, failure.start, color="tab:orange", alpha=0.15,
-                 label=f"risk window ({config.warning_horizon.total_seconds() / 3600:.0f} h)")
-    axis.axvline(failure.start, color="tab:red", linewidth=1, label="failure start")
+    shown_start = failure.start - pd.Timedelta(hours=project_config.FIGURE_HOURS_BEFORE_FAILURE)
+    shown_end = failure.start + pd.Timedelta(hours=project_config.FIGURE_HOURS_AFTER_FAILURE)
+    risk_start = failure.start - config.warning_horizon
+    alarm = alarm.reindex(test.index).fillna(False).astype(bool)
+
+    figure, axis = plt.subplots(figsize=(10, 3.6), facecolor=style.SURFACE)
+    style.style_axis(axis)
+    axis.axvspan(risk_start, failure.start, color=style.RISK_BAND, alpha=0.14, linewidth=0,
+                 label=f"risk window ({config.warning_horizon / pd.Timedelta(hours=1):g} h)")
+    axis.axvline(failure.start, color=style.FAILURE_LINE, linewidth=1, label="failure start")
+
     if scores is not None:
-        axis.plot(window, scores.reindex(window), linewidth=0.8, color="tab:blue", label="risk score")
+        shown = style.on_minute_grid(score_sign * scores, shown_start, shown_end)
+        axis.plot(shown.index, shown, linewidth=1, color=style.SERIES[0], label=score_label)
         if threshold is not None and np.isfinite(threshold):
-            axis.axhline(threshold, color="tab:blue", linestyle="--", linewidth=0.8, label="threshold")
-    alarm_times = window[alarm.reindex(window).fillna(False).to_numpy(dtype=bool)]
-    level = axis.get_ylim()[1] if scores is not None else 1
-    axis.scatter(alarm_times, np.full(len(alarm_times), level), marker="|", color="black", s=30, label="alarm")
-    axis.set_title(f"{method}, {fold.name}")
-    axis.legend(loc="upper left", fontsize=7)
+            axis.axhline(score_sign * threshold, color=style.TEXT_MUTED, linestyle="--", linewidth=0.9,
+                         label=f"threshold ({score_sign * threshold:.4g})")
+        in_risk = shown[(shown.index >= risk_start) & (shown.index < failure.start)].dropna()
+        if len(in_risk):
+            nearest = in_risk.max() if score_sign > 0 else in_risk.min()
+            word = "highest" if score_sign > 0 else "lowest"
+            axis.text(0.99, 0.97, f"{word} in risk window: {nearest:.4g}", transform=axis.transAxes,
+                      ha="right", va="top", fontsize=8, color=style.TEXT_MUTED,
+                      bbox=dict(facecolor=style.SURFACE, edgecolor="none", pad=1.5, alpha=0.9))
+        axis.set_ylabel(score_label, fontsize=8.5, color=style.TEXT_MUTED)
+    else:
+        shown = style.on_minute_grid(alarm.astype(float), shown_start, shown_end)
+        axis.step(shown.index, shown, where="post", linewidth=1, color=style.SERIES[0], label="alarm")
+        axis.set_yticks([0, 1], ["off", "on"])
+        axis.set_ylim(-0.1, 1.25)
+
+    # Each alert (one inspection) at its start: green if it starts in the risk window, red otherwise
+    starts = alert_starts(alarm, config)
+    starts = starts[(starts >= shown_start) & (starts < shown_end)]
+    in_window = (starts >= risk_start) & (starts < failure.start)
+    for times, colour, name in ((starts[in_window], style.CAUGHT, "alert in risk window"),
+                                (starts[~in_window], style.FALSE_ALERT, "false alert")):
+        for position, time in enumerate(times):
+            axis.axvline(time, color=colour, linewidth=1.6, label=name if position == 0 else None)
+
+    caught = bool(alarm[(alarm.index >= risk_start) & (alarm.index < failure.start)].any())
+    style.title(axis, f"{method}, {fold.name}: {'CAUGHT' if caught else 'missed'}")
+    axis.set_xlim(shown_start, shown_end)
     figure.autofmt_xdate()
-    figure.tight_layout()
+    figure.tight_layout(rect=(0, 0.08, 1, 1))
+    style.legend_below(figure, axis, columns=6)
+    folder = folder / file_safe(method)  # one subfolder per method
     folder.mkdir(parents=True, exist_ok=True)
-    safe = "".join(c if c.isalnum() else "_" for c in method.split(" (")[0])
-    path = folder / f"timeline_{safe}_{failure.name}.png"
-    figure.savefig(path, dpi=130)
+    path = folder / f"timeline_{file_safe(method)}_{failure.name}.png"
+    figure.savefig(path, dpi=style.DPI, facecolor=style.SURFACE)
     plt.close(figure)
     return path

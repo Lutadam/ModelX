@@ -14,6 +14,11 @@ RANDOM_SEED = 42
 # ---------------------------------------------------------------- data
 DATA_FILE = Path.home() / "Desktop" / "metropt+3+dataset" / "MetroPT3(AirCompressor).csv"
 FIGURES_DIR = Path("figures")
+FIGURES_DATA_DIR = FIGURES_DIR / "data"            # horizon figure, gaps: what the data looks like
+FIGURES_SUMMARY_DIR = FIGURES_DIR / "summary"      # every method side by side
+FIGURES_ALERTS_DIR = FIGURES_DIR / "alerts"        # every alert in each test block
+FIGURES_SCORES_DIR = FIGURES_DIR / "scores"        # score vs threshold, one file per method
+FIGURES_TIMELINES_DIR = FIGURES_DIR / "timelines"  # 48 h before each failure, one subfolder per method
 
 EXPECTED_SAMPLING_SECONDS = 10  # file is 0.1 Hz (confirmed from timestamps)
 
@@ -78,7 +83,7 @@ FALSE_ALERTS_PER_OPERATING_HOUR_BUDGET = 1 / 100
 ALERT_COOLDOWN = WARNING_HORIZON
 
 # An alarm still on this long after its alert began counts as a NEW alert (the
-# depot would inspect again the next day). Used by evaluation.py only.
+# depot would inspect again the next day). Used by evaluation/core.py only.
 REALERT_AFTER = pd.Timedelta(hours=24)
 
 # Every budget search (rules, Isolation Forest, evaluation) tries this many
@@ -100,7 +105,7 @@ F_BETA = 2.0                          # F-score weighting: a missed failure cost
 UNKNOWN_ONSET_FAILURES = {"F1"}       # start time is a placeholder, so hours of warning are not reported
 TIME_ORDERED_FAILURE = FAILURES[-1].name  # the only fold that trains on earlier failures only
 
-# Timeline figures (evaluation.py and horizon_figure.py) show this stretch around each failure.
+# Timeline figures (evaluation/core.py and evaluation/horizon_figure.py) show this stretch around each failure.
 FIGURE_HOURS_BEFORE_FAILURE = 48
 FIGURE_HOURS_AFTER_FAILURE = 2
 # Training rows this close to a test block are dropped, so no training row

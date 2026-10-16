@@ -1,17 +1,17 @@
 """Leave-one-failure-out folds with the purge-gap check (Hitesh).
 
 Condition 2 (leak-free folds) and refinement 3 (purge check). The folds are
-the team's (`evaluation.make_folds`), so the CNN+GRU is judged on the same test
+the team's (`evaluation.core.make_folds`), so the CNN+GRU is judged on the same test
 blocks as every other method. This module adds the checks a sequence model needs:
 
 * the purge gap must cover the input sequence plus the longest rolling feature
-  (`evaluation.minimum_purge_gap`), and
+  (`evaluation.core.minimum_purge_gap`), and
 * `assert_purge_check` proves no training row is closer to a test block than that.
 """
 import pandas as pd
 
 import config
-from evaluation import EvalConfig, check_purge_gap, make_folds, masks, minimum_purge_gap
+from evaluation.core import EvalConfig, check_purge_gap, make_folds, masks, minimum_purge_gap
 
 # Same failures as config.FAILURES, as plain dicts for display (`pd.DataFrame(METROPT_FAILURES)`).
 METROPT_FAILURES = [failure._asdict() for failure in config.FAILURES]

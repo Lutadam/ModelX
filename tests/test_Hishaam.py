@@ -1,4 +1,4 @@
-"""Tests for Hishaam's evaluation module (evaluation.py), on the real MetroPT-3 data.
+"""Tests for Hishaam's evaluation module (evaluation/core.py), on the real MetroPT-3 data.
 
 Owner: Lauthan Muhammad Hishaam Ibn Afzal (Evaluator & Ethics), Team ModelX.
 
@@ -14,14 +14,14 @@ import sys
 from itertools import product
 from pathlib import Path
 
-# Put the project root (where evaluation.py lives) on the import path
+# Put the project root (where config.py lives) on the import path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
 
 import config
-from evaluation import (
+from evaluation.core import (
     EvalConfig,
     alert_starts,
     chance_caught_by_luck,
@@ -36,7 +36,7 @@ from evaluation import (
     summarise,
     threshold_for_budget,
 )
-from minute_table import load_minute_table
+from data.minute_table import load_minute_table
 
 SETTINGS = EvalConfig()
 LOW_PRESSURE_TEST_CUTOFF_BAR = 8.0  # only to make a real alarm series for the checks

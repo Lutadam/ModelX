@@ -7,11 +7,11 @@ Part of Team ModelX (RailGuard AI)
 import sys
 from pathlib import Path
 
-# Run from anywhere: put the project root (where data.py and features.py live) on the import path
+# Run from anywhere: put the project root (where config.py lives) on the import path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data import calculate_operating_hours_and_budget, load_dataset, make_labels
-from features import build_features, fit_pca_health_index
+from data.dataset import calculate_operating_hours_and_budget, load_dataset, make_labels
+from data.features import build_features, fit_pca_health_index
 
 
 def run_tests():

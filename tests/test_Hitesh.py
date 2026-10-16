@@ -1,4 +1,4 @@
-"""Tests for Hitesh's CNN+GRU (models/) and folds.py, on the real MetroPT-3 data.
+"""Tests for Hitesh's CNN+GRU (models/) and evaluation/folds.py, on the real MetroPT-3 data.
 
 Run from anywhere: python tests/test_Hitesh.py
 Needs PyTorch and the dataset (config.DATA_FILE). Takes a few minutes: it loads
@@ -16,9 +16,9 @@ import pandas as pd
 import torch
 
 import config
-from evaluation import EvalConfig, make_folds, split
-from folds import METROPT_FAILURES, assert_purge_check, get_loeo_folds
-from minute_table import get_feature_names, load_minute_table
+from evaluation.core import EvalConfig, make_folds, split
+from evaluation.folds import METROPT_FAILURES, assert_purge_check, get_loeo_folds
+from data.minute_table import get_feature_names, load_minute_table
 from models.cnn_gru_network import RailGuardHybridNet
 from models.compute import describe_device, get_device
 from models.deep_learning_model import make_fit_and_score

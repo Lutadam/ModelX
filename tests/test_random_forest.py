@@ -8,9 +8,9 @@ extra trainings (out-of-sample scores on the training failures).
 """
 import _atul_common as common
 from config import FAILURES
-from evaluation import EvalConfig, cross_fitted_scores, false_alert_rate, make_folds, threshold_for_budget
+from evaluation.core import EvalConfig, cross_fitted_scores, false_alert_rate, make_folds, threshold_for_budget
 from models import predict_random_forest_alarms, train_random_forest
-from run_folds import make_random_forest_fit_and_score
+from evaluation.run_folds import make_random_forest_fit_and_score
 
 
 def budget_threshold(train, test, feature_names) -> float:

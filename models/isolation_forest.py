@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
-from alerts import count_false_alerts, operating_hours_of_normal_minutes
+from evaluation.alerts import count_false_alerts, operating_hours_of_normal_minutes
 from config import ISOLATION_FOREST_TREES, RANDOM_SEED, THRESHOLD_CANDIDATES
 
 

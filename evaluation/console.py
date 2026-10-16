@@ -96,11 +96,31 @@ def pr_auc_table(per_fold: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+def headline(per_fold: pd.DataFrame) -> str:
+    """The main result in one sentence."""
+    caught = per_fold.groupby("method", sort=False)["caught"].sum()
+    folds = per_fold["failure"].nunique()
+    if caught.sum() == 0:
+        return f"No method caught any of the {folds} failures. Compare them on false alerts only."
+    best = caught[caught == caught.max()]
+    return f"Most failures caught: {int(caught.max())} of {folds}, by {', '.join(best.index)}."
+
+
+def describe_number(value) -> str:
+    return "-" if pd.isna(value) else f"{value:.4g}"
+
+
 def print_results(per_fold: pd.DataFrame, summary: pd.DataFrame, budget_per_operating_hour: float) -> None:
     print()
     print_title("RESULTS")
+    print(f"  {headline(per_fold)}")
     print(f"  Budget: {100 * budget_per_operating_hour:g} false alert per 100 operating hours. "
           "FA = false alerts. OVER = above the budget in that fold.")
     print_table(overview_table(summary, budget_per_operating_hour), "Overview (all four folds pooled)")
     print_table(by_fold(per_fold, describe_outcome), "Each fold: caught or missed, false alerts")
     print_table(pr_auc_table(per_fold), "Each fold: PR-AUC (higher than the base rate = better than random)")
+    print_table(by_fold(per_fold, lambda row: describe_number(row["f2"])),
+                "Each fold: F2 on the alarm minutes (0 = no risk minute flagged)")
+    print_table(by_fold(per_fold, lambda row: describe_number(row["threshold"])),
+                "Each fold: alarm threshold from the budget (low-pressure rule: minus the cut-off in bar; "
+                "- = fixed rule)")

@@ -24,11 +24,11 @@ number is the evidence for or against N = 3 h:
   * departures inside -3 h       -> N fits;
   * no departure                 -> nothing in this signal warns of that failure.
 
-Standalone, not part of main.py. Needs only the MetroPT-3 CSV (config.DATA_FILE):
-    python horizon_figure.py
+Runs as step 3 of main.py, or on its own. Needs only the MetroPT-3 CSV (config.DATA_FILE):
+    python -m evaluation.horizon_figure
 or with another CSV path:
-    python horizon_figure.py "path/to/MetroPT3(AirCompressor).csv"
-Writes figures/horizon_four_panel.png and results/horizon_departures.csv.
+    python -m evaluation.horizon_figure "path/to/MetroPT3(AirCompressor).csv"
+Writes figures/data/horizon_four_panel.png and results/horizon_departures.csv.
 """
 import sys
 from pathlib import Path
@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 import config
+from evaluation import plot_style
 
 # ------------------------------------------------------------------ settings
 WARNING_HORIZON_HOURS = config.WARNING_HORIZON / pd.Timedelta(hours=1)  # N, fixed by the team (condition 3)
@@ -64,13 +65,13 @@ MIN_ROLLING_MINUTES = 40           # minutes with data a 60-min pressure mean ne
 FAILURES = [(failure.name, failure.start) for failure in config.FAILURES]
 UNKNOWN_ONSET = config.UNKNOWN_ONSET_FAILURES
 
-# Reference palette (dataviz skill), light mode
-SERIES = "#2a78d6"
-RISK_BAND = "#eb6834"
-TEXT = "#0b0b0b"
-TEXT_MUTED = "#52514e"
-GRID = "#e6e5e0"
-SURFACE = "#fcfcfb"
+# Colours shared with every other figure (plot_style.py)
+SERIES = plot_style.SERIES[0]
+RISK_BAND = plot_style.RISK_BAND
+TEXT = plot_style.TEXT
+TEXT_MUTED = plot_style.TEXT_MUTED
+GRID = plot_style.GRID
+SURFACE = plot_style.SURFACE
 
 
 # ------------------------------------------------------------------ data
@@ -248,7 +249,7 @@ def operating_hours_per_day(csv_path: Path) -> float:
 def make_horizon_report(csv_path: Path = config.DATA_FILE) -> pd.DataFrame:
     """Draw the four-panel figure, save the departures table and print what it says."""
     minutes = load_minutes(csv_path)
-    departures = draw(minutes, config.FIGURES_DIR / "horizon_four_panel.png")
+    departures = draw(minutes, config.FIGURES_DATA_DIR / "horizon_four_panel.png")
     config.RESULTS_DIR.mkdir(exist_ok=True)
     departures.to_csv(config.RESULTS_DIR / "horizon_departures.csv", index=False)
     print("What each signal did before each failure:")
@@ -256,9 +257,15 @@ def make_horizon_report(csv_path: Path = config.DATA_FILE) -> pd.DataFrame:
     hours_a_day = operating_hours_per_day(csv_path)
     print(f"\nCompressor motor on: {hours_a_day:.1f} h per day on average "
           f"-> 1 false alert per 100 operating hours = 1 per {100 / hours_a_day:.1f} days")
-    print(f"Written: {config.FIGURES_DIR / 'horizon_four_panel.png'}, {config.RESULTS_DIR / 'horizon_departures.csv'}")
+    print(f"Written: {config.FIGURES_DATA_DIR / 'horizon_four_panel.png'}, {config.RESULTS_DIR / 'horizon_departures.csv'}")
     return departures
 
 
 if __name__ == "__main__":
-    make_horizon_report(Path(sys.argv[1]) if len(sys.argv) > 1 else config.DATA_FILE)
+    csv_file = Path(sys.argv[1]) if len(sys.argv) > 1 else config.DATA_FILE
+    try:
+        make_horizon_report(csv_file)
+    except FileNotFoundError:
+        sys.exit(f"STOPPED: the MetroPT-3 CSV is not at {csv_file}. Pass its path, or change DATA_FILE in config.py.")
+    except PermissionError as error:
+        sys.exit(f"STOPPED: could not write {error.filename}. Close it in any program that has it open and run again.")
